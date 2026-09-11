@@ -137,7 +137,7 @@ export default function GitHubPanel({ projectId, onClose }: { projectId: string;
                 <select
                   value={selectedRepo}
                   onChange={(e) => setSelectedRepo(e.target.value)}
-                  className="w-full rounded border border-[var(--line)] bg-transparent p-2 text-sm text-[var(--text)] focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)] focus:outline-none"
+                  className="w-full rounded border border-[var(--line)] bg-transparent p-2 text-sm text-[var(--text)] outline-none transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
                 >
                   {repos.map(r => (
                     <option key={r.id} value={r.name}>{r.name}</option>
@@ -154,7 +154,7 @@ export default function GitHubPanel({ projectId, onClose }: { projectId: string;
                         value={newRepoName}
                         onChange={(e) => setNewRepoName(e.target.value)}
                         placeholder="my-awesome-project"
-                        className="mt-1 w-full rounded border border-[var(--line)] bg-transparent p-2 text-sm text-[var(--text)] focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)] focus:outline-none"
+                        className="mt-1 w-full rounded border border-[var(--line)] bg-transparent p-2 text-sm text-[var(--text)] outline-none transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
                       />
                     </div>
                     <div className="flex items-center gap-2">

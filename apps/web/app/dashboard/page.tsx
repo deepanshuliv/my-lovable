@@ -49,7 +49,7 @@ export default function DashboardPage() {
           What's the vision?
         </h2>
         
-        <div className="rounded-[20px] border p-2 transition-all duration-200 focus-within:border-[var(--accent)]/40 focus-within:ring-1 focus-within:ring-[var(--accent)]/20 shadow-none focus-within:shadow-[0_0_15px_rgba(85,255,0,0.1)]" 
+        <div className="rounded-2xl border p-2 transition-all focus-within:border-[var(--accent)]/30 focus-within:ring-4 focus-within:ring-[var(--accent)]/10" 
              style={{ backgroundColor: 'var(--panel)', borderColor: 'var(--line)' }}>
           <textarea
             value={prompt}

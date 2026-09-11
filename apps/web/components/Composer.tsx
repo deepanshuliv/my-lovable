@@ -153,7 +153,7 @@ export default function Composer({
       )}
 
       <div
-        className="flex flex-col rounded-xl border transition-all duration-200 focus-within:border-[var(--accent)]/40 focus-within:ring-1 focus-within:ring-[var(--accent)]/20 shadow-none focus-within:shadow-[0_0_15px_rgba(85,255,0,0.1)]"
+        className="flex flex-col rounded-xl border shadow-sm transition-all focus-within:border-[var(--accent)]/30 focus-within:ring-4 focus-within:ring-[var(--accent)]/10"
         style={{ background: 'var(--panel-2)', borderColor: 'var(--line)' }}
       >
         <textarea
@@ -237,7 +237,7 @@ export default function Composer({
               <button
                 onClick={submit}
                 disabled={!draft.trim()}
-                className="btn-primary rounded-lg px-4 py-1.5 text-[12px] min-w-[80px]"
+                className="btn-primary px-4 py-1.5 text-[12px] min-w-[80px]"
               >
                 Send
               </button>

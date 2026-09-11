@@ -88,7 +88,7 @@ export default function ByokModal({
                 setProvider(e.target.value as ByokProvider);
                 setModel('');
               }}
-              className="w-full rounded-xl border px-4 py-3 text-[14px] font-medium text-white outline-none focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)] transition-colors"
+              className="w-full rounded-xl border px-4 py-3 text-[14px] font-medium text-white outline-none transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
               style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
             >
               {PROVIDERS.map((p) => (
@@ -123,7 +123,7 @@ export default function ByokModal({
               autoComplete="off"
               spellCheck={false}
               placeholder={providerInfo.placeholder}
-              className="w-full rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)] transition-colors"
+              className="w-full rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
               style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
             />
           </label>
@@ -135,7 +135,7 @@ export default function ByokModal({
             <select
               value={selected}
               onChange={(e) => setModel(e.target.value)}
-              className="w-full rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)] transition-colors"
+              className="w-full rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
               style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
             >
               {available.map((m) => (

@@ -92,7 +92,7 @@ export default function DashboardProjectGrid() {
             placeholder="Search projects..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-lg border bg-[var(--panel)] py-2 pl-10 pr-4 text-[13px] outline-none transition-colors focus:bg-[var(--panel-hover)] focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)]"
+            className="w-full rounded-lg border bg-[var(--panel)] py-2 pl-10 pr-4 text-[13px] outline-none transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10 focus:bg-[var(--panel-hover)]"
             style={{ borderColor: 'var(--line)', color: 'var(--text)' }}
           />
         </div>
@@ -175,9 +175,9 @@ export default function DashboardProjectGrid() {
                       if (e.key === 'Enter') void commitRename(project.id);
                       if (e.key === 'Escape') setEditing(null);
                     }}
-                    className="w-full rounded-md border px-3 py-1.5 text-[14px] outline-none transition-all duration-200 focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)]"
+                    className="w-full rounded-md border px-3 py-1.5 text-[14px] outline-none transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
                     style={{
-                      borderColor: 'var(--line-strong)',
+                      borderColor: 'var(--line)',
                       background: 'var(--panel-2)',
                       color: 'var(--text)',
                     }}
@@ -258,9 +258,9 @@ export default function DashboardProjectGrid() {
                             if (e.key === 'Enter') void commitRename(project.id);
                             if (e.key === 'Escape') setEditing(null);
                           }}
-                          className="w-full max-w-xs rounded-md border px-3 py-1.5 text-[14px] outline-none transition-all duration-200 focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)]"
+                          className="w-full max-w-xs rounded-md border px-3 py-1.5 text-[14px] outline-none transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
                           style={{
-                            borderColor: 'var(--line-strong)',
+                            borderColor: 'var(--line)',
                             background: 'var(--panel-2)',
                             color: 'var(--text)',
                           }}
