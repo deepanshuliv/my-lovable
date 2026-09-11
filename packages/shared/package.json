@@ -1,0 +1,12 @@
+{
+  "name": "@repo/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./redact": "./redact.ts",
+    "./events": "./events.ts"
+  }
+}

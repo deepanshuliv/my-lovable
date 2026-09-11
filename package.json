@@ -1,19 +1,34 @@
 {
-  "name": "agent",
+  "name": "my-lovable",
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "bun index.ts"
+    "dev": "bun run --filter '*' dev",
+    "dev:backend": "bun run --cwd apps/backend dev",
+    "dev:worker": "bun run --cwd apps/worker dev",
+    "dev:web": "bun run --cwd apps/web dev",
+    "typecheck": "bunx tsc --noEmit",
+    "db:generate": "bunx prisma generate --schema packages/db/prisma/schema.prisma",
+    "db:migrate": "bunx prisma migrate dev --schema packages/db/prisma/schema.prisma",
+    "db:push": "bunx prisma db push --schema packages/db/prisma/schema.prisma",
+    "bake:snapshot": "bun scripts/bake-snapshot.ts",
+    "infra:up": "docker compose up -d --build",
+    "infra:down": "docker compose down",
+    "infra:logs": "docker compose logs -f"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    
+    "prisma": "^6.19.0"
+  },
+  "dependencies": {
+    "@daytona/sdk": "^0.203.0"
   },
   "peerDependencies": {
     "typescript": "^5"
-  },
-  "dependencies": {
-    "@google/genai": "^2.12.0"
   }
 }

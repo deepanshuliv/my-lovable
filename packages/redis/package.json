@@ -1,0 +1,18 @@
+{
+  "name": "@repo/redis",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./keys": "./keys.ts",
+    "./locks": "./locks.ts",
+    "./stream": "./stream.ts",
+    "./pubsub": "./pubsub.ts"
+  },
+  "dependencies": {
+    "@repo/shared": "workspace:*",
+    "redis": "^5.9.0"
+  }
+}

@@ -1,0 +1,140 @@
+// Postgres is the source of truth in the diagram. Everything else — Redis, the sandbox
+// filesystem, the R2 snapshot — is a cache or an accelerator that can be rebuilt from
+// what is in here.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id        String   @id @default(uuid())
+  /// The Clerk user id (`sub`) of whoever created this project.
+  ///
+  /// Deliberately a plain string and not a relation: there is no local `User` table.
+  /// Clerk owns identity, and mirroring it here would mean a webhook endpoint plus a
+  /// table that silently drifts whenever a delivery fails. The cost of this choice is
+  /// that a delete in Clerk leaves rows here pointing at a user that no longer exists.
+  ownerId   String
+  name      String   @default("Untitled")
+  template  String   @default("nextjs-fullstack")
+  sandboxId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events           Event[]
+  snapshots        Snapshot[]
+  secrets          Secret[]
+  githubConnection GithubConnection?
+
+  /// The projects list is always "mine, newest first" — this is the query that serves it.
+  @@index([ownerId, updatedAt])
+  @@map("projects")
+}
+
+model Event {
+  id        String   @id @default(uuid())
+  projectId String
+  /// Monotonic per project, allocated by Redis INCR before the event hits the stream.
+  /// Snapshot watermarks point at this, and replay reads `seq > watermark`.
+  seq       Int
+  type      String
+  payload   Json
+  /// The Redis stream entry id. Unique per project so a redelivered batch is a no-op
+  /// instead of a duplicate row.
+  streamId  String
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, streamId])
+  @@index([projectId, seq])
+  @@map("events")
+}
+
+model Snapshot {
+  id        String   @id @default(uuid())
+  projectId String
+  /// Object key in R2, e.g. projects/<id>/<seq>.tar.gz
+  r2Key     String
+  /// The watermark. Everything at or below this seq is already inside the tarball;
+  /// on restore we replay only events with a greater seq.
+  upToSeq   Int
+  sizeBytes Int      @default(0)
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, upToSeq])
+  @@map("snapshots")
+}
+
+model Secret {
+  id            String   @id @default(uuid())
+  projectId     String
+  /// The env var name, e.g. DATABASE_URL. Not sensitive.
+  key           String
+  /// AES-256-GCM. Plaintext is never stored and never returned by the API.
+  ciphertext    String
+  iv            String
+  authTag       String
+  /// Enough for a human to recognise the value, never enough to use it.
+  maskedPreview String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, key])
+  @@map("secrets")
+}
+
+/// A model-provider API key a user brought themselves, encrypted at rest.
+///
+/// Keyed by Clerk user id rather than by project: the key belongs to the person, and the
+/// whole point is that they paste it once instead of once per project.
+///
+/// Same AES-256-GCM scheme as `Secret`, and the same rule — plaintext is never stored and
+/// no endpoint returns it. What is new, and worth being clear-eyed about, is the blast
+/// radius: `SECRETS_MASTER_KEY` now protects credentials that bill *other people*, so a
+/// leak of it is a billing incident for every user, not just a breach of our own data.
+model UserProviderKey {
+  id            String   @id @default(uuid())
+  /// Clerk user id (the `sub` claim).
+  userId        String
+  /// 'openrouter' | 'gemini' — validated against the provider catalogue before writing.
+  provider      String
+  ciphertext    String
+  iv            String
+  authTag       String
+  /// Enough for a human to recognise which key this is, never enough to use it.
+  maskedPreview String
+  /// The model the user chose alongside the key. Null means "use the provider default".
+  model         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  /// One key per provider per user; re-saving replaces rather than accumulates.
+  @@unique([userId, provider])
+  @@map("user_provider_keys")
+}
+
+model GithubConnection {
+  id               String   @id @default(uuid())
+  projectId        String   @unique
+  repository       String
+  branch           String
+  prNumber         Int?
+  prUrl            String?
+  lastSyncedCommit String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("github_connections")
+}

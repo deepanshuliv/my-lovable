@@ -1,11 +1,12 @@
 # dependencies (bun install)
 node_modules
-
+.claude 
+.agent 
 # output
 out
 dist
 *.tgz
-
+.agent
 # code coverage
 coverage
 *.lcov

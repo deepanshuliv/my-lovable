@@ -1,0 +1,150 @@
+##
+# The local stack: two backend replicas behind nginx, a worker, Postgres and Redis.
+#
+# Two replicas rather than one on purpose. Every interesting failure in this design —
+# lock contention, a question answered on the wrong replica, a takeover after a dropped
+# connection — is invisible with a single backend and obvious with two.
+##
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lovable}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lovable}
+      POSTGRES_DB: ${POSTGRES_DB:-lovable}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-lovable}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly: the stream is the write-ahead buffer between a chat turn and Postgres.
+    # Losing it on restart would lose events that were never persisted.
+    command: redis-server --appendonly yes
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: push the schema, then exit. Everything else waits for it to succeed.
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/bun.Dockerfile
+    command: ['bunx', 'prisma', 'db', 'push', '--schema', 'packages/db/prisma/schema.prisma', '--accept-data-loss']
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lovable}:${POSTGRES_PASSWORD:-lovable}@postgres:5432/${POSTGRES_DB:-lovable}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend-1:
+    build:
+      context: .
+      dockerfile: infra/docker/bun.Dockerfile
+    restart: unless-stopped
+    # Optional so a fresh clone can still `docker compose config` and boot the
+    # infrastructure. Services that need a key say so at startup rather than failing here.
+    env_file:
+      - path: .env
+        required: false
+    environment: &backend-env
+      BACKEND_ID: backend-1
+      PORT: 8000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lovable}:${POSTGRES_PASSWORD:-lovable}@postgres:5432/${POSTGRES_DB:-lovable}
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: development
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  backend-2:
+    build:
+      context: .
+      dockerfile: infra/docker/bun.Dockerfile
+    restart: unless-stopped
+    # Optional so a fresh clone can still `docker compose config` and boot the
+    # infrastructure. Services that need a key say so at startup rather than failing here.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *backend-env
+      BACKEND_ID: backend-2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/bun.Dockerfile
+    command: ['bun', 'apps/worker/index.ts']
+    restart: unless-stopped
+    # Optional so a fresh clone can still `docker compose config` and boot the
+    # infrastructure. Services that need a key say so at startup rather than failing here.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      WORKER_ID: worker-1
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lovable}:${POSTGRES_PASSWORD:-lovable}@postgres:5432/${POSTGRES_DB:-lovable}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # The browser talks to nginx, not to a backend directly — that is what makes the
+      # load balancing and the sticky hashing apply to real traffic.
+      NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8080}
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+    volumes:
+      # Bind-mounted so UI edits hot-reload without rebuilding the image.
+      - ./apps/web:/app
+      - /app/node_modules
+      - /app/.next
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - '${GATEWAY_PORT:-8080}:8080'
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend-1
+      - backend-2
+      - web
+
+volumes:
+  postgres-data:
+  redis-data:

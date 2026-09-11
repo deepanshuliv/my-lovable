@@ -1,0 +1,26 @@
+# Without this, `COPY . .` drags the host's node_modules into the image — macOS-native
+# binaries on top of a linux install, and it clobbers the Prisma client generated during
+# the build. The image would be both enormous and broken.
+node_modules
+**/node_modules
+.next
+**/.next
+dist
+out
+build
+
+.git
+.gitignore
+
+# Secrets must never be baked into an image layer. Compose supplies them at runtime.
+.env
+.env.*
+!.env.example
+
+.agent
+.claude
+.DS_Store
+**/.DS_Store
+*.log
+coverage
+*.tsbuildinfo

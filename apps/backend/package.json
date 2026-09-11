@@ -1,0 +1,27 @@
+{
+  "name": "@repo/backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "module": "index.ts",
+  "scripts": {
+    "dev": "bun --watch index.ts",
+    "start": "bun index.ts"
+  },
+  "dependencies": {
+    "@clerk/backend": "^3.16.9",
+    "@daytona/sdk": "^0.203.0",
+    "@google/genai": "^2.16.0",
+    "@repo/db": "workspace:*",
+    "@repo/memory": "workspace:*",
+    "@repo/redis": "workspace:*",
+    "@repo/shared": "workspace:*",
+    "@repo/storage": "workspace:*",
+    "cors": "^2.8.5",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.6"
+  }
+}

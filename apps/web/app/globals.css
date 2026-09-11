@@ -1,0 +1,207 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-heading), ui-sans-serif, system-ui, sans-serif;
+  --font-handwritten: var(--font-handwritten), cursive, sans-serif;
+}
+
+:root {
+  /* BACKGROUNDS */
+  --bg: #0a0a0b;
+  --panel: rgba(255, 255, 255, 0.03);
+  --panel-2: rgba(255, 255, 255, 0.06);
+  --panel-hover: rgba(255, 255, 255, 0.09);
+  
+  /* BORDERS */
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.15);
+  
+  /* TYPOGRAPHY */
+  --text: #ffffff;
+  --muted: #a1a1aa;
+  
+  /* BRAND COLORS */
+  --accent: #55ff00;
+  --accent-hover: #66ff1a;
+  --accent-soft: rgba(85, 255, 0, 0.1);
+  --accent-glow: rgba(85, 255, 0, 0.3);
+
+  /* SEMANTICS */
+  --error: #ff4d4d;
+  --error-bg: rgba(255, 77, 77, 0.1);
+  --success: #00e676;
+  --warning: #ffb74d;
+}
+
+/* Base button tokens */
+.btn-primary {
+  @apply rounded-full px-7 py-3 text-[14px] font-extrabold text-black transition flex items-center justify-center;
+  background: #ffffff;
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.15);
+}
+.btn-primary:hover {
+  background: #f4f4f5;
+  box-shadow: 0 0 25px rgba(255, 255, 255, 0.25);
+}
+.btn-primary:active {
+  @apply scale-95;
+}
+.btn-primary:disabled {
+  @apply opacity-40 cursor-not-allowed;
+  box-shadow: none;
+}
+
+.btn-secondary {
+  @apply rounded-full border px-7 py-3 text-[13px] font-semibold text-white/70 transition flex items-center justify-center;
+  border-color: var(--line);
+  background: transparent;
+}
+.btn-secondary:hover {
+  @apply bg-white/5 text-white;
+}
+.btn-secondary:active {
+  @apply scale-95;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  overflow-x: hidden;
+  margin: 0;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ═══════════════════════════════════════════
+   Background — almost black with subtle glow
+   ═══════════════════════════════════════════ */
+.bg-magic {
+  position: relative;
+  background-color: #0a0a0b;
+}
+
+/* Subtle dark atmospheric glow behind hero content */
+.bg-magic::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  height: 70vh;
+  background: radial-gradient(
+    ellipse 60% 50% at 50% 100%,
+    rgba(94, 255, 20, 0.06) 0%,
+    rgba(255, 255, 255, 0.03) 30%,
+    transparent 70%
+  );
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* ═══════════════════════════════
+   Navbar — dark rounded container
+   ═══════════════════════════════ */
+.nav-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 12px 32px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 10, 11, 0.95);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* ═══════════════════════════════════════
+   Hero headline — layered poster typography
+   ═══════════════════════════════════════ */
+.hero-headline-base {
+  font-family: var(--font-heading), ui-sans-serif, system-ui, sans-serif;
+  font-weight: 400; /* Anton only has 400 */
+  font-size: clamp(64px, 10vw, 130px);
+  line-height: 0.95;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+
+.hero-headline-ghost {
+  /* Faint gray/white ghost duplicate */
+  color: rgba(255, 255, 255, 0.12);
+  transform: translateY(14px); /* Positioned slightly DOWNWARD */
+  filter: blur(4px); /* Very soft blur */
+  /* Fade naturally into the black background */
+  opacity: 0.8;
+}
+
+.hero-headline-front {
+  /* Crisp white headline */
+  color: #ffffff;
+  /* Subtle soft glow/fade around the edges where appropriate */
+  text-shadow: 0 0 40px rgba(255, 255, 255, 0.15);
+}
+
+/* ═══════════════════════════════════════════════
+   "NOT ANYMORE!" — layered graffiti composition
+   ═══════════════════════════════════════════════ */
+.hero-handwritten-wrap {
+  width: 100%;
+  margin-top: -10px; /* Bring it close to the headline without overlapping */
+}
+
+.hero-handwritten-base {
+  font-family: var(--font-handwritten), cursive, sans-serif;
+  font-size: clamp(48px, 7.5vw, 100px);
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+  transform: rotate(-1deg);
+  /* The base class is used on a relative wrapper, children will inherit the font properties */
+}
+
+.hero-handwritten-ghost {
+  /* Muted gray/white ghost lettering */
+  color: rgba(220, 220, 220, 0.15);
+  /* Offset DOWN and RIGHT */
+  transform: translate(6px, 10px);
+  /* Slight blur */
+  filter: blur(4px);
+  /* Visible through gaps and underneath, low opacity */
+  opacity: 0.9;
+}
+
+.hero-handwritten-front {
+  /* Bright neon green foreground */
+  color: var(--accent);
+  /* Subtle neon-green outer glow */
+  text-shadow: 
+    0 0 10px rgba(85, 255, 0, 0.3),
+    0 0 25px rgba(85, 255, 0, 0.15);
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@repo/memory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./iris": "./iris.ts",
+    "./fallback": "./fallback.ts"
+  },
+  "dependencies": {
+    "@repo/redis": "workspace:*",
+    "@repo/shared": "workspace:*"
+  }
+}
