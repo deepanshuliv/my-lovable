@@ -153,7 +153,7 @@ export default function Composer({
       )}
 
       <div
-        className="flex flex-col rounded-xl border shadow-sm transition-colors focus-within:border-zinc-600"
+        className="flex flex-col rounded-xl border transition-all duration-200 focus-within:border-[var(--accent)]/40 focus-within:ring-1 focus-within:ring-[var(--accent)]/20 shadow-none focus-within:shadow-[0_0_15px_rgba(85,255,0,0.1)]"
         style={{ background: 'var(--panel-2)', borderColor: 'var(--line)' }}
       >
         <textarea

@@ -204,7 +204,7 @@ export default function SecretsPanel({
                       autoComplete="off"
                       spellCheck={false}
                       placeholder="Paste value..."
-                      className="min-w-0 flex-1 rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 focus:border-[var(--accent)] transition-colors"
+                      className="min-w-0 flex-1 rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)] transition-colors"
                       style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
                     />
                   </div>
@@ -234,7 +234,7 @@ export default function SecretsPanel({
                 onChange={(e) => setNewKey(e.target.value)}
                 placeholder="Key (e.g. DATABASE_URL)"
                 spellCheck={false}
-                className="w-full sm:w-1/3 rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 focus:border-[var(--accent)] transition-colors"
+                className="w-full sm:w-1/3 rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)] transition-colors"
                 style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
               />
               <input
@@ -247,7 +247,7 @@ export default function SecretsPanel({
                 autoComplete="off"
                 spellCheck={false}
                 placeholder="Value..."
-                className="w-full sm:flex-1 rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 focus:border-[var(--accent)] transition-colors"
+                className="w-full sm:flex-1 rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 focus:border-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--accent)]/20 shadow-none focus:shadow-[0_0_15px_rgba(85,255,0,0.1)] transition-colors"
                 style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
               />
               <button

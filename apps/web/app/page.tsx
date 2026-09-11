@@ -18,12 +18,6 @@ export default function Landing() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  /**
-   * Guards the auto-submit below against React's StrictMode, which mounts effects twice in
-   * development. Without it, signing in with a pending prompt creates *two* projects and
-   * navigates to the second — a real bug, not a dev-only artefact, since the first project
-   * is left orphaned in the user's list.
-   */
   const firedRef = useRef(false);
 
   const createAndGo = useCallback(
@@ -71,36 +65,36 @@ export default function Landing() {
   }, [isLoaded, isSignedIn, createAndGo, router]);
 
   return (
-    <main className="relative flex min-h-screen flex-col overflow-hidden bg-magic selection:bg-[var(--accent)]/30 selection:text-[var(--accent)]">
+    <main className="relative flex h-screen flex-col overflow-hidden bg-[var(--bg)] selection:bg-[var(--primary)]/30 selection:text-[var(--primary)] text-[var(--text)]">
 
-      {}
-      <div className="w-full px-6 pt-4 z-10">
-        <div className="nav-container">
-          {}
-          <div className="flex items-center gap-2 shrink-0">
-            <span className="font-heading text-[18px] uppercase text-white tracking-wider leading-none">
-              MY-LOVABLE
-            </span>
-            <span className="rounded bg-[var(--accent)] px-1.5 py-0.5 text-[10px] text-black font-extrabold leading-none">
-              AI
-            </span>
+      {/* NAVBAR */}
+      <div className="w-full px-6 pt-4 z-10 flex-shrink-0">
+        <div className="flex items-center justify-between w-full max-w-7xl mx-auto py-3 px-1 border-b border-[var(--line)]">
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded bg-[var(--panel-2)] border border-[var(--line)]">
+              <img src="/logo.jpg" alt="Logo" className="h-full w-full object-cover" />
+            </div>
+            <div className="flex flex-col">
+              <span className="font-heading text-[16px] font-medium tracking-wide leading-none text-white">
+                MY-LOVABLE
+              </span>
+              <span className="text-[10px] font-mono text-[var(--primary)] tracking-widest uppercase mt-1">
+                Trading Protocol
+              </span>
+            </div>
           </div>
 
-          {}
-          <nav className="hidden md:flex items-center gap-6 text-[13px] font-medium text-white/90">
-            <a href="#" className="hover:text-white transition">Benefits</a>
-            <a href="#" className="hover:text-white transition">How to use</a>
-            <a href="#" className="hover:text-white transition">Testimonials</a>
-            <a href="#" className="hover:text-white transition">Pricing</a>
-            <a href="#" className="hover:text-white transition">FAQs</a>
+          <nav className="hidden md:flex items-center gap-6 text-[12px] font-medium text-[var(--muted)] tracking-wide uppercase">
+            <a href="#" className="hover:text-[var(--primary)] transition-colors">Documentation</a>
+            <a href="#" className="hover:text-[var(--primary)] transition-colors">Markets</a>
+            <a href="#" className="hover:text-[var(--primary)] transition-colors">Pro API</a>
           </nav>
 
-          {}
-          <div className="shrink-0">
+          <div className="shrink-0 flex items-center gap-4">
             {isLoaded && !isSignedIn && (
               <SignInButton mode="modal">
-                <button className="rounded-full px-6 py-2 text-[13px] font-semibold border border-[var(--accent)] text-[var(--accent)] bg-transparent hover:bg-[var(--accent)]/10 active:scale-95 transition">
-                  Sign up
+                <button className="btn-secondary text-[12px] uppercase tracking-wider py-1.5 px-4 h-8 rounded">
+                  Connect Wallet
                 </button>
               </SignInButton>
             )}
@@ -109,53 +103,27 @@ export default function Landing() {
         </div>
       </div>
 
-      {}
-      <div className="flex flex-1 flex-col items-center justify-center px-6 pb-24 z-10">
-        <div className="w-full max-w-[880px] text-center flex flex-col items-center">
+      {/* HERO / TERMINAL */}
+      <div className="flex flex-1 flex-col items-center justify-center px-6 pb-12 z-10">
+        <div className="w-full max-w-3xl flex flex-col items-center">
 
-          {}
-          <div className="mb-8 flex items-center gap-2">
+          <div className="text-center mb-10">
+            <h1 className="font-heading text-4xl md:text-5xl font-medium tracking-tight text-white mb-4">
+              Deploy your ideas at execution speed.
+            </h1>
+            <p className="text-[14px] md:text-[15px] font-mono text-[var(--muted)] max-w-xl mx-auto leading-relaxed">
+              &gt; Initialize environment...<br/>
+              &gt; Describe the application interface and backend logic.<br/>
+              &gt; Compiling to sandbox container.
+            </p>
           </div>
 
-          {}
-          <div className="relative w-full flex flex-col items-center">
-            {}
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[70%] h-[120%] bg-white/[0.03] blur-[100px] rounded-full pointer-events-none z-0"></div>
-
-            {}
-            <h1 className="hero-headline-base hero-headline-ghost absolute top-0 left-0 w-full text-center z-10 pointer-events-none select-none" aria-hidden="true">
-              CODING IS A<br />NIGHTMARE.
-            </h1>
-
-            {}
-            <h1 className="hero-headline-base hero-headline-front text-center w-full relative z-20">
-              CODING IS A<br />NIGHTMARE.
-            </h1>
-
-            {}
-            <div className="hero-handwritten-wrap relative z-30 pointer-events-none select-none flex justify-center" aria-hidden="true">
-              <div className="relative inline-block hero-handwritten-base">
-                {}
-                <span className="hero-handwritten-ghost absolute top-0 left-0 w-full h-full">
-                  NOT ANYMORE!
-                </span>
-                {}
-                <span className="hero-handwritten-front relative block">
-                  NOT ANYMORE!
-                </span>
+          <div className="w-full">
+            <div className="trading-panel transition-all duration-200 focus-within:border-[var(--primary)]">
+              <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--line)] bg-[var(--panel-2)] text-[11px] font-mono text-[var(--muted)] uppercase tracking-wider">
+                <span className="w-2 h-2 rounded-full bg-[var(--primary)] inline-block"></span>
+                Terminal // Input Prompt
               </div>
-            </div>
-          </div>
-
-          {}
-          <p className="mt-12 mb-12 text-[17px] md:text-[19px] leading-[1.7] max-w-[640px] mx-auto text-white/80 font-medium">
-            Ditch the hassle of manual coding. Let my-lovable handle your application
-            generation and sandbox deployment — quickly, simply, and efficiently.
-          </p>
-
-          {}
-          <div className="w-full max-w-[640px]">
-            <div className="rounded-[24px] border border-white/12 bg-white/[0.03] p-2">
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -165,28 +133,28 @@ export default function Landing() {
                     start();
                   }
                 }}
-                rows={2}
-                placeholder="A modern real-time Kanban board with drag-and-drop, tags, and Postgres persistence…"
-                className="w-full resize-none bg-transparent px-6 py-4 text-[15px] leading-relaxed outline-none focus:ring-2 focus:ring-[var(--accent)]/30 rounded-t-xl transition-all placeholder:text-white/30 text-white"
+                rows={3}
+                placeholder="Initialize a robust order book matching engine with depth charts..."
+                className="w-full resize-none bg-transparent px-4 py-4 text-[14px] font-mono leading-relaxed outline-none transition-all placeholder:text-[var(--muted)] text-white"
               />
-              <div className="flex items-center justify-between px-6 pb-4 pt-2">
-                <span className="text-[13px] text-white/35">
+              <div className="flex items-center justify-between px-4 pb-4 pt-2">
+                <span className="text-[11px] font-mono text-[var(--secondary-muted)] uppercase">
                   {isLoaded && !isSignedIn
-                    ? 'Enter to start \u2014 you\u2019ll sign in first'
-                    : 'Press Enter \u21B5 to start'}
+                    ? '[ENTER] to Connect & Execute'
+                    : '[ENTER] to Execute'}
                 </span>
                 <button
                   onClick={start}
                   disabled={busy || !prompt.trim()}
-                  className="btn-primary min-w-[140px] gap-2 py-3 px-6"
+                  className="btn-primary min-w-[140px] gap-2 py-2 px-6 h-9 rounded text-[12px] uppercase tracking-wider"
                 >
                   {busy ? (
                     <>
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-black border-t-transparent" />
-                      Generating…
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-black border-t-transparent" />
+                      Executing...
                     </>
                   ) : (
-                    'Start building'
+                    'Execute Build'
                   )}
                 </button>
               </div>
@@ -194,17 +162,13 @@ export default function Landing() {
           </div>
 
           {error && (
-            <div className="mt-8 rounded-2xl border border-red-500/30 bg-red-500/10 px-6 py-4 text-center text-sm font-medium text-red-400">
-              {error} — ensure backend is reachable on{' '}
-              <span className="font-mono text-red-300">
-                {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}
+            <div className="mt-6 w-full rounded border border-[var(--error)] bg-[var(--error-bg)] px-4 py-3 text-left text-xs font-mono text-[var(--error)]">
+              [ERR] {error} <br/>
+              <span className="opacity-70 mt-1 block">
+                Target node: {process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}
               </span>
             </div>
           )}
-
-          <div className="mt-16 w-full max-w-3xl text-left">
-            {}
-          </div>
         </div>
       </div>
     </main>

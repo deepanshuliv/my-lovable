@@ -33,8 +33,8 @@ export default function Sidebar() {
       {}
       <div className="flex items-center justify-between p-4 border-b" style={{ borderColor: 'var(--line)' }}>
         <div className="flex items-center gap-2 min-w-0">
-          <div className="flex h-8 w-8 items-center justify-center rounded bg-[var(--panel-2)] border" style={{ borderColor: 'var(--line)' }}>
-             <span className="font-heading text-xs uppercase text-white tracking-wider leading-none">ML</span>
+          <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded bg-[var(--panel-2)] border shadow-[0_0_8px_rgba(85,255,0,0.15)]" style={{ borderColor: 'var(--line)' }}>
+             <img src="/logo.jpg" alt="ML" className="h-full w-full object-cover" />
           </div>
           <div className="min-w-0 flex flex-col">
             <span className="truncate text-sm font-medium text-white">{user?.fullName || user?.primaryEmailAddress?.emailAddress || 'My Workspace'}</span>
