@@ -40,8 +40,14 @@ export class GeminiProvider implements ModelProvider {
     this.ownClient = apiKey ? new GoogleGenAI({ apiKey }) : null;
   }
 
-    private client(): GoogleGenAI {
+  private client(): GoogleGenAI {
     return this.ownClient ?? getClient();
+  }
+
+  private requestFits(transcript: ConversationPart[], tools: ToolSpec[], budget: RunOptions['contextBudget']): boolean {
+    const inputTokens = transcript.reduce((total, part) => total + estimateTokens(part.content), 0);
+    if (!budget) return !isOverThreshold(inputTokens, this.contextWindow);
+    return !budget.shouldCompact(inputTokens, estimateTokens(JSON.stringify(tools)));
   }
 
     async complete(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string> {
@@ -96,23 +102,28 @@ export class GeminiProvider implements ModelProvider {
     return `<context-summary>\n${summary}\n</context-summary>${tail ? `\n\n${tail}` : ''}`;
   }
 
-    private async *ensureRoom(
+  private async *ensureRoom(
     state: { transcript: ConversationPart[]; fileOps: FileOps; previousSummary?: string },
     midStream: boolean,
+    tools: ToolSpec[],
+    budget: RunOptions['contextBudget'],
   ): AsyncGenerator<ProviderEvent, string | null> {
     const used = () => state.transcript.reduce((n, p) => n + estimateTokens(p.content), 0);
-    if (!isOverThreshold(used(), this.contextWindow)) return null;
+    const needsCompaction = budget
+      ? budget.shouldCompact(used(), estimateTokens(JSON.stringify(tools)))
+      : isOverThreshold(used(), this.contextWindow);
+    if (!needsCompaction) return null;
 
     let restart = yield* this.compact(state, midStream, false);
 
-    if (isOverThreshold(used(), this.contextWindow)) {
+    if (!this.requestFits(state.transcript, tools, budget)) {
       restart = (yield* this.compact(state, midStream, true)) ?? restart;
     }
     return restart;
   }
 
   async *run(options: RunOptions): AsyncIterable<ProviderEvent> {
-    const { systemPrompt, tools, opening, clientErrors, maxTurns, isCancelled, executeTool } = options;
+    const { systemPrompt, tools, opening, clientErrors, maxTurns, isCancelled, executeTool, contextBudget } = options;
 
     const openingText = clientErrors ? `${opening}\n\n${clientErrors}` : opening;
 
@@ -140,7 +151,12 @@ export class GeminiProvider implements ModelProvider {
       }
       turns++;
 
-      const restart = yield* this.ensureRoom(state, false);
+      const restart = yield* this.ensureRoom(state, false, tools, contextBudget);
+      if (!this.requestFits(state.transcript, tools, contextBudget)) {
+        yield { type: 'error', message: 'context budget cannot fit mandatory provider request after compaction' };
+        yield { type: 'finished', reason: 'context_budget_exceeded' };
+        return;
+      }
       if (restart) {
         
         previousInteractionId = undefined;
@@ -194,6 +210,7 @@ export class GeminiProvider implements ModelProvider {
           }
 
           if (typeof args.comand === 'string') trackFileOps(state.fileOps, args.comand);
+          state.transcript.push({ role: 'assistant', content: `[tool_call ${call.name}] ${JSON.stringify(args)}` });
 
           yield { type: 'tool_call', id: call.id, name: call.name, args };
 
@@ -219,9 +236,10 @@ export class GeminiProvider implements ModelProvider {
           yield { type: 'text_delta', text: event.delta.text };
 
           const running =
-            state.transcript.reduce((n, p) => n + estimateTokens(p.content), 0) +
-            estimateTokens(assistantText);
-          if (isOverThreshold(running, this.contextWindow)) {
+            state.transcript.reduce((n, p) => n + estimateTokens(p.content), 0) + estimateTokens(assistantText);
+          if (contextBudget
+            ? contextBudget.shouldCompact(running, estimateTokens(JSON.stringify(tools)))
+            : isOverThreshold(running, this.contextWindow)) {
             overflowedMidStream = true;
             break;
           }
@@ -243,7 +261,7 @@ export class GeminiProvider implements ModelProvider {
       if (assistantText) state.transcript.push({ role: 'assistant', content: assistantText });
 
       if (overflowedMidStream) {
-        const resumeFrom = yield* this.ensureRoom(state, true);
+        const resumeFrom = yield* this.ensureRoom(state, true, tools, contextBudget);
         previousInteractionId = undefined;
         nextInput = [
           {

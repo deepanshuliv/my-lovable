@@ -5,13 +5,11 @@ import { OpenRouterProvider } from './openrouter';
 import type { ModelProvider } from './types';
 
 export * from './types';
-export { GeminiProvider } from './gemini';
-export { OpenRouterProvider } from './openrouter';
 
 export const DEFAULT_OPENROUTER_MODEL = 'openai/gpt-4o-mini';
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
 
-export type ProviderChoice = {
+type ProviderChoice = {
   provider: ModelProvider;
   reason: string;
 };

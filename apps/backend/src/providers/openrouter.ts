@@ -151,7 +151,12 @@ export class OpenRouterProvider implements ModelProvider {
     return total;
   }
 
-    private async *compact(
+  private requestFits(messages: ChatMessage[], tools: ToolSpec[], budget: RunOptions['contextBudget']): boolean {
+    if (!budget) return !isOverThreshold(this.estimate(messages), this.contextWindow);
+    return !budget.shouldCompact(this.estimate(messages), estimateTokens(JSON.stringify(tools)));
+  }
+
+  private async *compact(
     state: { messages: ChatMessage[]; fileOps: FileOps; previousSummary?: string },
     midStream: boolean,
     force: boolean,
@@ -192,21 +197,26 @@ export class OpenRouterProvider implements ModelProvider {
       : { type: 'compaction', tokensBefore, tokensAfter, contextWindow: this.contextWindow, midStream, summary };
   }
 
-    private async *ensureRoom(
+  private async *ensureRoom(
     state: { messages: ChatMessage[]; fileOps: FileOps; previousSummary?: string },
     midStream: boolean,
+    tools: ToolSpec[],
+    budget: RunOptions['contextBudget'],
   ): AsyncGenerator<ProviderEvent, void> {
-    if (!isOverThreshold(this.estimate(state.messages), this.contextWindow)) return;
+    const needsCompaction = budget
+      ? budget.shouldCompact(this.estimate(state.messages), estimateTokens(JSON.stringify(tools)))
+      : isOverThreshold(this.estimate(state.messages), this.contextWindow);
+    if (!needsCompaction) return;
 
     yield* this.compact(state, midStream, false);
 
-    if (isOverThreshold(this.estimate(state.messages), this.contextWindow)) {
+    if (!this.requestFits(state.messages, tools, budget)) {
       yield* this.compact(state, midStream, true);
     }
   }
 
   async *run(options: RunOptions): AsyncIterable<ProviderEvent> {
-    const { systemPrompt, tools, opening, clientErrors, maxTurns, isCancelled, executeTool } = options;
+    const { systemPrompt, tools, opening, clientErrors, maxTurns, isCancelled, executeTool, contextBudget } = options;
 
     const initialMessages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -237,7 +247,13 @@ export class OpenRouterProvider implements ModelProvider {
       }
       turns++;
 
-      yield* this.ensureRoom(state, false);
+      yield* this.ensureRoom(state, false, tools, contextBudget);
+
+      if (!this.requestFits(state.messages, tools, contextBudget)) {
+        yield { type: 'error', message: 'context budget cannot fit mandatory provider request after compaction' };
+        yield { type: 'finished', reason: 'context_budget_exceeded' };
+        return;
+      }
 
       if (resumeAfterCompaction) {
         resumeAfterCompaction = false;
@@ -246,6 +262,12 @@ export class OpenRouterProvider implements ModelProvider {
           content:
             'Continue exactly where you left off. Do not repeat what you already said or redo work already completed.',
         });
+      }
+
+      if (!this.requestFits(state.messages, tools, contextBudget)) {
+        yield { type: 'error', message: 'context budget cannot fit continuation request after compaction' };
+        yield { type: 'finished', reason: 'context_budget_exceeded' };
+        return;
       }
 
       let response: Response;
@@ -275,7 +297,9 @@ export class OpenRouterProvider implements ModelProvider {
           assistantText += delta.content;
           yield { type: 'text_delta', text: delta.content };
 
-          if (isOverThreshold(baseTokens + estimateTokens(assistantText), this.contextWindow)) {
+          if (contextBudget
+            ? contextBudget.shouldCompact(baseTokens + estimateTokens(assistantText), estimateTokens(JSON.stringify(tools)))
+            : isOverThreshold(baseTokens + estimateTokens(assistantText), this.contextWindow)) {
             overflowedMidStream = true;
             break;
           }
@@ -301,7 +325,7 @@ export class OpenRouterProvider implements ModelProvider {
         response.body?.cancel().catch(() => {});
         if (assistantText) state.messages.push({ role: 'assistant', content: assistantText });
 
-        yield* this.ensureRoom(state, true);
+        yield* this.ensureRoom(state, true, tools, contextBudget);
         resumeAfterCompaction = true;
         continue;
       }

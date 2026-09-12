@@ -25,7 +25,7 @@ export type ConversationPart = {
   content: string;
 };
 
-export function serializeConversation(parts: ConversationPart[]): string {
+function serializeConversation(parts: ConversationPart[]): string {
   const out: string[] = [];
 
   for (const part of parts) {
@@ -91,13 +91,26 @@ export async function summarize(
     ? `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n${conversation}\n\n${UPDATE_SUMMARIZATION_PROMPT}`
     : `${conversation}\n\n${SUMMARIZATION_PROMPT}`;
 
-  const summary = await summarizer.complete(
-    SUMMARIZATION_SYSTEM_PROMPT,
-    userPrompt,
-    SUMMARY_MAX_TOKENS,
-  );
+  try {
+    const summary = (await summarizer.complete(
+      SUMMARIZATION_SYSTEM_PROMPT,
+      userPrompt,
+      SUMMARY_MAX_TOKENS,
+    )).trim();
+    if (summary.length > 0) return summary + formatFileOperations([...fileOps.read], [...fileOps.modified]);
+  } catch (error) {
+    // Compaction is a continuity optimisation. A provider outage must not erase the
+    // in-memory history or prevent the provider from attempting a deterministic rebuild.
+    console.log('[COMPACTION_PROVIDER_FAILED] , ', String(error).slice(0, 240));
+  }
 
-  return summary.trim() + formatFileOperations([...fileOps.read], [...fileOps.modified]);
+  const fallback = [
+    previousSummary ? `<previous-summary>\n${previousSummary.slice(-8_000)}\n</previous-summary>` : '',
+    '## Durable fallback checkpoint',
+    parts.slice(-24).map((part) => `[${part.role}] ${part.content.slice(-900)}`).join('\n'),
+    'Preserve the current objective and continue from the latest observable tool result.',
+  ].filter(Boolean).join('\n');
+  return fallback.slice(0, 12_000) + formatFileOperations([...fileOps.read], [...fileOps.modified]);
 }
 
 export function findCutPoint(parts: ConversationPart[], keepTokens = KEEP_RECENT_TOKENS): number {

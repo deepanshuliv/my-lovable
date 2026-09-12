@@ -36,6 +36,12 @@ export type RunOptions = {
     isCancelled: () => boolean;
     executeTool: (name: string, args: Record<string, unknown>, callId: string) => Promise<string>;
     clientErrors?: string;
+    contextBudget?: {
+      capacity: number;
+      responseReserve: number;
+      safetyReserve: number;
+      shouldCompact: (inputTokens: number, toolDefinitionTokens?: number) => boolean;
+    };
 };
 
 export interface ModelProvider {
