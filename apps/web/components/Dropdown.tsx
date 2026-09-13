@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, ReactNode } from 'react';
 
-export type DropdownItem = {
+type DropdownItem = {
   id: string;
   label: ReactNode;
   secondary?: ReactNode;

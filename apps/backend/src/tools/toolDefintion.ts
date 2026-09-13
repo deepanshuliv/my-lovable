@@ -1,4 +1,4 @@
-import { publishAnswer, waitForAnswer } from '@repo/redis';
+import { waitForAnswer } from '@repo/redis';
 import { QUESTION_TIMEOUT_MS } from '../config';
 import { executeCommand } from '../sandbox';
 import { isValidSecretKey } from '../utils/secrets';
@@ -273,4 +273,3 @@ export const toolCall = {
   question_tool: askQuestion,
   declare_required_secrets: declareRequiredSecrets,
 };
-

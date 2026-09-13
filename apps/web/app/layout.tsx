@@ -31,21 +31,10 @@ export const metadata: Metadata = {
   },
 };
 
-import { dark } from '@clerk/themes';
-
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <ClerkProvider
       appearance={{
-        variables: {
-          colorPrimary: '#ffffff',
-          colorBackground: '#0a0a0b',
-          colorInputBackground: '#121214',
-          colorInputText: '#ffffff',
-          colorText: '#ffffff',
-          colorTextSecondary: '#a1a1aa',
-          borderRadius: '0.75rem',
-        },
         elements: {
           card: {
             backgroundColor: '#0a0a0b',

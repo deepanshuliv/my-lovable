@@ -34,8 +34,6 @@ export const QUESTION_TIMEOUT_MS = envInt('QUESTION_TIMEOUT_MS', 10 * 60 * 1000)
 
 export const COMMAND_TIMEOUT_SECONDS = envInt('COMMAND_TIMEOUT_SECONDS', 300);
 
-export const HISTORY_LIMIT = envInt('HISTORY_LIMIT', 40);
-
 export const MAX_AGENT_TURNS = envInt('MAX_AGENT_TURNS', 30);
 
 export const DEV_LOG_PATH = envOr('DEV_LOG_PATH', '/tmp/dev-server.log');

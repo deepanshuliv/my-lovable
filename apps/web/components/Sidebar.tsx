@@ -42,7 +42,7 @@ export default function Sidebar() {
           </div>
         </div>
         <div className="shrink-0">
-          <UserButton afterSignOutUrl="/" appearance={{ elements: { userButtonAvatarBox: "h-7 w-7" } }} />
+          <UserButton appearance={{ elements: { userButtonAvatarBox: "h-7 w-7" } }} />
         </div>
       </div>
 

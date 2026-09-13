@@ -80,8 +80,6 @@ export default function GitHubPanel({ projectId, onClose }: { projectId: string;
     }
   };
 
-  const connectUrl = '/#'; 
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div

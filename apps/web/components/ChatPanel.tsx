@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { isAuthError, MODES, type ByokProvider, type ProviderPreference } from '@/lib/byok';
+import { isAuthError, type ByokProvider, type ProviderPreference } from '@/lib/byok';
 import type { AgentMode, ChatItem } from '@/lib/types';
 import Composer from './Composer';
 

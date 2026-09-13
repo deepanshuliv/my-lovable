@@ -1,5 +1,5 @@
 import type { ByokProvider } from './byok';
-import type { AgentMode, ChatItem, RequiredSecret, SecretSummary, StreamEvent } from './types';
+import type { AgentMode, SecretSummary, StreamEvent } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 

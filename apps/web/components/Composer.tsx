@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useRef, useEffect } from 'react';
 import type { AgentMode } from '@/lib/types';
 import { MODES, type ByokProvider, type ProviderPreference } from '@/lib/byok';
 import Dropdown, { type DropdownGroup } from './Dropdown';

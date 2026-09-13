@@ -3,12 +3,6 @@ import type { AgentMode } from './types';
 
 export type ByokProvider = 'openrouter' | 'gemini';
 
-export type ByokConfig = {
-  provider: ByokProvider;
-  apiKey: string;
-  model?: string;
-};
-
 const SKIP_KEY = 'my-lovable.byok.skipped';
 
 export const PROVIDERS: { id: ByokProvider; label: string; keyUrl: string; placeholder: string }[] = [
@@ -83,4 +77,3 @@ export function isAuthError(text: string): boolean {
     lower.includes('authentication')
   );
 }
-
