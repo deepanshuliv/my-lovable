@@ -13,6 +13,7 @@
     "dev:worker": "bun run --cwd apps/worker dev",
     "dev:web": "bun run --cwd apps/web dev",
     "typecheck": "bunx tsc --noEmit",
+    "test": "bun test",
     "db:generate": "bunx prisma generate --schema packages/db/prisma/schema.prisma",
     "db:migrate": "bunx prisma migrate dev --schema packages/db/prisma/schema.prisma",
     "db:push": "bunx prisma db push --schema packages/db/prisma/schema.prisma",
