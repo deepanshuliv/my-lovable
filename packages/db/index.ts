@@ -10,4 +10,12 @@ export const prisma =
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 
-export type { Project, Event, Snapshot, Secret } from '@prisma/client';
+export type {
+  Project,
+  Event,
+  Snapshot,
+  Secret,
+  TaskState,
+  SessionSummary,
+  ToolOutput,
+} from '@prisma/client';

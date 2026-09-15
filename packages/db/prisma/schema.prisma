@@ -29,11 +29,73 @@ model Project {
   events           Event[]
   snapshots        Snapshot[]
   secrets          Secret[]
+  taskState        TaskState?
+  summaries        SessionSummary[]
+  toolOutputs      ToolOutput[]
   githubConnection GithubConnection?
 
   /// The projects list is always "mine, newest first" — this is the query that serves it.
   @@index([ownerId, updatedAt])
   @@map("projects")
+}
+
+/// Durable execution state for the long-running agent. The state payload is written as
+/// one typed document so it can evolve without forcing a migration for every new task
+/// field; TaskStateManager validates and merges it before persistence.
+model TaskState {
+  taskId      String   @id
+  projectId   String   @unique
+  sessionId   String
+  version     Int      @default(1)
+  state       Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, updatedAt])
+  @@map("task_states")
+}
+
+/// Append-only, versioned compacted continuity. Original Event rows are never removed
+/// when a summary is created.
+model SessionSummary {
+  id                 String   @id @default(uuid())
+  taskId             String
+  sessionId          String
+  version            Int
+  summary            Json
+  coversFromEventSeq Int?
+  coversToEventSeq   Int?
+  createdAt          DateTime @default(now())
+
+  project Project @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, version])
+  @@index([sessionId, version])
+  @@map("session_summaries")
+}
+
+/// Raw tool observations live outside the active model context. The bounded preview and
+/// metadata are safe to put in a prompt; raw stdout/stderr remain available by id.
+model ToolOutput {
+  id          String   @id @default(uuid())
+  taskId      String
+  sessionId   String
+  command     String?
+  exitCode    Int?
+  stdout      String
+  stderr      String
+  preview     String
+  truncated   Boolean  @default(false)
+  byteLength  Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  project Project @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@index([sessionId, createdAt])
+  @@map("tool_outputs")
 }
 
 model Event {
