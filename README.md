@@ -1,4 +1,4 @@
-# my-lovable
+# Alloy
 
 An AI app builder. You describe an app, an agent writes and runs it inside a Daytona cloud sandbox, and the running result is streamed back into a live preview beside the chat.
 
@@ -76,7 +76,30 @@ docker compose up -d redis
 REDIS_URL=redis://localhost:6379 bun scripts/check-locks.ts
 ```
 
+## Long-running agent runtime
+
+The backend now keeps the model's working context disposable and stores execution continuity
+in Postgres. `TaskState` is versioned and durable, `session_summaries` are append-only, and
+raw oversized tool results are stored in `tool_outputs`. The active prompt contains task
+state plus bounded recent/retrieved observations; it never needs the complete session history.
+
+Runtime diagnostics are available at `GET /projects/:projectId/runtime` for an authorized
+project owner. The endpoint reports task state, latest summary coverage, event count,
+externalized output count, and the latest recorded context budget.
+
+Run the architecture tests with:
+
+```bash
+bun test
+bun run typecheck
+```
+
+The forced-small-context integration test exercises repeated compaction, retrieval, large
+tool outputs, isolated subagents, verification gating, and a process-replacement resume.
+
 ## Limitations
 
-- There is no automated test suite. The only gate is `bun run typecheck`.
+- Production persistence follows this repository's existing Postgres source-of-truth design;
+  lexical retrieval is implemented as a bounded Postgres event scan behind a retriever
+  abstraction rather than adding a second SQLite database.
 - Secrets and user keys are encrypted at rest using AES-256-GCM. Plaintext is never stored or returned by the API, and secrets are redacted from anything the agent prints (see `packages/shared/redact.ts` and `apps/backend/src/userKeys.ts`).
