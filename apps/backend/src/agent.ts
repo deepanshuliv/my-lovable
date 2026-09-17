@@ -1,7 +1,7 @@
 import { randomUUIDv7 } from 'bun';
 import { createMemoryStore, type MemoryMessage } from '@repo/memory';
 import { rememberQuestionProject } from '@repo/redis';
-import { HISTORY_LIMIT, MAX_AGENT_TURNS, QUESTION_TIMEOUT_MS, VERIFY_AFTER_TURN } from './config';
+import { MAX_AGENT_TURNS, QUESTION_TIMEOUT_MS, VERIFY_AFTER_TURN } from './config';
 import type { Emitter } from './utils/events';
 import { getProvider, type ProviderOverride } from './providers';
 import { promptForMode, type AgentMode } from './sytemPrompt';
@@ -14,6 +14,7 @@ import { loadClientErrorsSinceLastTurn } from './project';
 import { listSecrets } from './utils/secrets';
 import { writeSnapshot } from './utils/snapshot';
 import { verifyProject } from './utils/verify';
+import { AgentRuntime } from './runtime';
 
 const memory = createMemoryStore();
 
@@ -28,35 +29,6 @@ export type AgentContext = {
     byok?: ProviderOverride;
     forcePlatformProvider?: 'openrouter' | 'gemini';
 };
-
-async function buildOpening(context: AgentContext, query: string): Promise<string> {
-  const [history, recalled] = await Promise.all([
-    memory.getSessionHistory(context.projectId, HISTORY_LIMIT),
-    memory.searchLongTerm(context.projectId, query, 5),
-  ]);
-
-  const parts: string[] = [];
-
-  if (recalled.length > 0) {
-    parts.push(
-      `## What you remember about this user\n${recalled.map((m) => `- ${m.text}`).join('\n')}`,
-    );
-  }
-
-  if (context.replayed && context.replayed.length > 0) {
-    parts.push(`## Work done since the last snapshot\n${context.replayed.join('\n')}`);
-  }
-
-  if (history.length > 0) {
-    parts.push(
-      `## Conversation so far\n${history.map((m) => `${m.role}: ${m.content}`).join('\n')}`,
-    );
-  }
-
-  parts.push(`## Current request\n${query}`);
-
-  return parts.join('\n\n');
-}
 
 async function getClientErrors(projectId: string): Promise<string | undefined> {
   try {
@@ -92,13 +64,33 @@ export async function runAgent(context: AgentContext, query: string) {
   const { projectId, emitter } = context;
   const mode = context.mode ?? 'build';
   const provider = getProvider(context.byok, context.forcePlatformProvider);
-
-    const opening = await buildOpening(context, query);
+  const runtime = new AgentRuntime({ projectId, emitter, provider });
+  await runtime.start(query);
+  const systemPrompt = promptForMode(mode);
+  const toolSpecs = toolsForMode(mode);
   const clientErrors = await getClientErrors(projectId);
+  const projectContext = [context.replayed?.join('\n'), clientErrors].filter(Boolean).join('\n\n');
+  let activeContext = await runtime.buildContext(
+    systemPrompt,
+    toolSpecs,
+    query,
+    undefined,
+    projectContext,
+  );
+  if (await runtime.compactIfUseful(activeContext)) {
+    activeContext = await runtime.buildContext(systemPrompt, toolSpecs, query, undefined, projectContext);
+  }
+  const opening = activeContext.opening;
 
     const logOffset = mode === 'build' ? await devLogOffset(projectId).catch(() => 0) : 0;
 
   await emitter.emit('user_query', { text: query, mode });
+  await runtime.record('task_state_updated', { state: activeContext.state });
+  await runtime.record('llm_request', {
+    provider: provider.name,
+    model: provider.model,
+    context: activeContext.budget,
+  });
   emitter.stream('running', { stage: 'Connecting to AI model…' });
   console.log('▸ start', projectId, `[${mode}]`, `[${provider.name}/${provider.model}]`, query);
 
@@ -107,15 +99,19 @@ export async function runAgent(context: AgentContext, query: string) {
   const cancelled = () => Boolean(context.isCancelled?.());
   let ranCommands = false;
 
-    const declaredSecrets: RequiredSecret[] = [];
+  const declaredSecrets: RequiredSecret[] = [];
+  let providerReason = 'unknown';
+  let providerFailed = false;
 
   const stream = provider.run({
-    systemPrompt: promptForMode(mode),
-    tools: toolsForMode(mode),
+    systemPrompt,
+    tools: toolSpecs,
     opening,
-    clientErrors,
+    // Diagnostics are included in the budgeted active context above. Sending them again
+    // here would bypass the context accounting and duplicate untrusted output.
     maxTurns: MAX_AGENT_TURNS,
     isCancelled: cancelled,
+    contextBudget: runtime.budget,
     executeTool: async (name, args, callId) => {
       if (name === 'write_file') {
         ranCommands = true;
@@ -143,7 +139,23 @@ export async function runAgent(context: AgentContext, query: string) {
       } else if (name === 'declare_required_secrets') {
         emitter.stream('running', { stage: 'Checking required environment variables…' });
       }
-      return await executeTool(context, name, args, callId, mode, declaredSecrets);
+      await runtime.record('tool_started', { name, args, callId });
+      try {
+        const raw = name === 'read_tool_output'
+          ? await runtime.outputs.retrieve(
+              String(args.output_id ?? ''),
+              typeof args.start === 'number' ? Math.max(0, args.start) : 0,
+              typeof args.end === 'number' ? Math.max(0, args.end) : undefined,
+            ).catch((error) => `ERROR: ${String(error).slice(0, 400)}`)
+          : await executeTool(context, name, args, callId, mode, declaredSecrets);
+        const command = typeof args.command === 'string' ? args.command : typeof args.comand === 'string' ? args.comand : undefined;
+        const bounded = await runtime.captureToolOutput(command, raw);
+        await runtime.record('tool_finished', { name, callId, isError: bounded.startsWith('ERROR'), output: bounded.slice(0, 1_500) });
+        return bounded;
+      } catch (error) {
+        await runtime.record('tool_failed', { name, callId, message: String(error).slice(0, 500) }).catch(() => {});
+        throw error;
+      }
     },
   });
 
@@ -157,7 +169,16 @@ export async function runAgent(context: AgentContext, query: string) {
 
       case 'tool_call':
         await emitter.emit('tool_call', { name: event.name, args: event.args });
+        await runtime.record('tool_requested', { name: event.name, args: event.args, callId: event.id });
         console.log(`\n⚙ ${event.name}  ${(event.args as any).comand ?? JSON.stringify(event.args)}`);
+        if (['write_file', 'edit_file'].includes(event.name) && typeof event.args.path === 'string') {
+          const state = await runtime.states.loadRequired(projectId);
+          if (!state.filesTouched.includes(event.args.path)) {
+            await runtime.states.update(projectId, { filesTouched: [...state.filesTouched, event.args.path] });
+            await runtime.record('task_state_updated', { filesTouched: [...state.filesTouched, event.args.path] });
+          }
+          await runtime.record(event.name === 'write_file' ? 'file_created' : 'file_modified', { path: event.args.path, operation: event.name });
+        }
         break;
 
       case 'tool_result':
@@ -187,6 +208,15 @@ export async function runAgent(context: AgentContext, query: string) {
         console.log(
           `▸ compacted ${event.tokensBefore} → ${event.tokensAfter} tokens${event.midStream ? ' (mid-stream)' : ''}`,
         );
+        await runtime.record('compaction_completed', {
+          tokensBefore: event.tokensBefore,
+          tokensAfter: event.tokensAfter,
+          providerSummary: event.summary.slice(0, 4_000),
+          midStream: event.midStream,
+        });
+        await runtime.persistProviderCompaction(event.summary).catch((error) => {
+          console.log('[DURABLE_COMPACTION_FAILED] , ', String(error).slice(0, 200));
+        });
         break;
 
       case 'summarization':
@@ -197,19 +227,40 @@ export async function runAgent(context: AgentContext, query: string) {
           summary: event.summary,
         });
         console.log(`▸ full summarization ${event.tokensBefore} → ${event.tokensAfter} tokens`);
+        await runtime.record('compaction_completed', {
+          tokensBefore: event.tokensBefore,
+          tokensAfter: event.tokensAfter,
+          providerSummary: event.summary.slice(0, 4_000),
+          forced: true,
+        });
+        await runtime.persistProviderCompaction(event.summary).catch((error) => {
+          console.log('[DURABLE_COMPACTION_FAILED] , ', String(error).slice(0, 200));
+        });
         break;
 
       case 'error':
         await emitter.emit('error', { message: event.message });
+        providerFailed = true;
+        await runtime.record('agent_failed', { message: event.message.slice(0, 500) });
+        {
+          const state = await runtime.states.loadRequired(projectId);
+          await runtime.states.update(projectId, {
+            failedAttempts: [...state.failedAttempts, { approach: 'provider execution', reason: event.message.slice(0, 500), createdAt: new Date().toISOString() }],
+            currentState: 'Provider execution failed; the task can resume from durable state.',
+          });
+        }
         break;
 
       case 'finished':
+        providerReason = event.reason;
         console.log('▸ done', event.reason);
         break;
     }
   }
 
-  await finishTurn(context, assistantText.join(''), transcript, ranCommands, mode, declaredSecrets, logOffset);
+  await runtime.record('llm_response', { text: assistantText.join('').slice(0, 4_000), provider: provider.name, model: provider.model });
+  await finishTurn(context, assistantText.join(''), transcript, ranCommands, mode, declaredSecrets, logOffset, runtime);
+  await runtime.record('agent_finished', { reason: providerReason, failed: providerFailed });
 }
 
 /**
@@ -247,6 +298,7 @@ async function finishTurn(
   mode: AgentMode,
   declaredSecrets: RequiredSecret[],
   logOffset: number,
+  runtime: AgentRuntime,
 ) {
   const { projectId, entry, emitter } = context;
 
@@ -262,7 +314,7 @@ async function finishTurn(
     if (wrote && VERIFY_AFTER_TURN) {
     try {
       emitter.stream('running', { stage: 'Verifying build & TypeScript types…' });
-      const result = await verifyProject(projectId, logOffset);
+      const result = await runtime.verification.verify(projectId, projectId, () => verifyProject(projectId, logOffset));
       await emitter.emit('verification', {
         typecheckPassed: result.typecheckPassed,
         typecheckOutput: result.typecheckOutput,
@@ -301,7 +353,10 @@ async function finishTurn(
   if (wrote) {
     try {
       const info = await writeSnapshot(entry, seq);
-      if (info) await emitter.emit('snapshot', { r2Key: info.r2Key, upToSeq: info.upToSeq });
+      if (info) {
+        await emitter.emit('snapshot', { r2Key: info.r2Key, upToSeq: info.upToSeq });
+        await runtime.record('checkpoint_created', { r2Key: info.r2Key, upToSeq: info.upToSeq });
+      }
     } catch (error) {
       console.log('[SNAPSHOT_FAILED] , ', String(error).slice(0, 200));
     }

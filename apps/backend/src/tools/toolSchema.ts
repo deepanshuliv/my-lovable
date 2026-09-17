@@ -107,6 +107,21 @@ const searchCode: ToolSpec = {
   },
 };
 
+const readToolOutput: ToolSpec = {
+  name: 'read_tool_output',
+  description:
+    'Retrieve a bounded slice of a previously externalized large tool result using its output_id. Use start/end character offsets when you need another portion.',
+  parameters: {
+    type: 'object',
+    properties: {
+      output_id: { type: 'string', description: 'The output_id included in the truncated tool result' },
+      start: { type: 'integer', description: 'Optional zero-based character offset (default 0)' },
+      end: { type: 'integer', description: 'Optional exclusive character offset' },
+    },
+    required: ['output_id'],
+  },
+};
+
 const bashTool: ToolSpec = {
   name: 'bash_tool',
   description:
@@ -173,12 +188,13 @@ const declareRequiredSecrets: ToolSpec = {
   },
 };
 
-export const allTools: ToolSpec[] = [
+const allTools: ToolSpec[] = [
   writeFile,
   editFile,
   readFile,
   listDir,
   searchCode,
+  readToolOutput,
   bashTool,
   askQuestion,
   declareRequiredSecrets,
@@ -189,4 +205,3 @@ export function toolsForMode(mode: 'plan' | 'build'): ToolSpec[] {
     ? [readFile, listDir, searchCode, bashTool, askQuestion, declareRequiredSecrets]
     : allTools;
 }
-

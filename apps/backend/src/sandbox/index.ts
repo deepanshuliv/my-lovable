@@ -191,12 +191,7 @@ export async function injectSecrets(projectId: string, secrets: Record<string, s
   }
 }
 
-export async function deleteSandbox(projectId: string) {
-  const entry = sandboxes.get(projectId);
-  if (!entry) return;
-  await entry.sandbox.delete();
-  sandboxes.delete(projectId);
-}
+
 
 export async function deleteDaytonaSandbox(sandboxId: string): Promise<void> {
   try {

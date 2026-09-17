@@ -174,6 +174,31 @@ app.get(
   },
 );
 
+app.get(
+  '/projects/:projectId/runtime',
+  requireProjectAccess,
+  async (req: Request, res: Response) => {
+    const projectId = param(req, 'projectId');
+    if (!projectId) return res.status(400).json({ msg: 'please provide valid projectId' });
+
+    const [taskState, latestSummary, eventCount, toolOutputCount, latestRequest] = await Promise.all([
+      prisma.taskState.findUnique({ where: { taskId: projectId }, select: { state: true, version: true, updatedAt: true } }),
+      prisma.sessionSummary.findFirst({ where: { taskId: projectId }, orderBy: { version: 'desc' }, select: { version: true, coversFromEventSeq: true, coversToEventSeq: true, createdAt: true } }),
+      prisma.event.count({ where: { projectId } }),
+      prisma.toolOutput.count({ where: { sessionId: projectId } }),
+      prisma.event.findFirst({ where: { projectId, type: 'llm_request' }, orderBy: { seq: 'desc' }, select: { payload: true, createdAt: true } }),
+    ]);
+
+    res.json({
+      taskState: taskState ? { ...(taskState.state as object), version: taskState.version, updatedAt: taskState.updatedAt } : null,
+      latestSummary,
+      eventCount,
+      externalizedToolOutputs: toolOutputCount,
+      latestContext: latestRequest ? { payload: latestRequest.payload, createdAt: latestRequest.createdAt } : null,
+    });
+  },
+);
+
 async function byokForUser(userId: string): Promise<ProviderOverride | undefined> {
   try {
     return (await loadUserKey(userId)) ?? undefined;
