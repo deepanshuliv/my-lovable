@@ -713,7 +713,7 @@ async function executeTool(
   }
 
   if (name === 'bash_tool') {
-    return await toolCall.bash_tool(context.projectId, String(args.comand ?? ''), mode);
+    return await toolCall.bash_tool(context.projectId, String(args.comand ?? args.command ?? ''), mode);
   }
 
   if (name === 'request_api_keys') {
@@ -744,5 +744,5 @@ async function executeTool(
     return parsed.map((item, index) => `${index + 1}. ${item.question}\n   Answer: ${answers[index]}`).join('\n');
   }
 
-  return `ERROR: unknown tool ${name} (call ${callId})`;
+  return `ERROR: unknown tool ${name} (call ${callId}). Use only the tools you were given; run shell programs such as grep, ls, cat or npm through bash_tool.`;
 }

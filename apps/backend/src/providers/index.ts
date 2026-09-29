@@ -1,12 +1,20 @@
 import { envInt, envOr } from '@repo/shared';
 import { NAMING_MODEL_GEMINI, NAMING_MODEL_OPENROUTER } from '../config';
 import { GeminiProvider } from './gemini';
-import { OpenRouterProvider } from './openrouter';
+import { freeRequestLimiter } from '../freeQuota';
+import { OpenRouterProvider, type OpenRouterOptions } from './openrouter';
 import type { ByokProviderName, ModelProvider } from './types';
 
 export * from './types';
 
 export const DEFAULT_OPENROUTER_MODEL = 'deepseek/deepseek-v4-flash';
+export const DEFAULT_PLATFORM_MODEL = 'poolside/laguna-s-2.1:free';
+
+export const PLATFORM_FREE_ONLY = true;
+
+export function platformOptions(): OpenRouterOptions {
+  return { freeOnly: true, limiter: freeRequestLimiter };
+}
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
 export const DEFAULT_OPENAI_MODEL = envOr('OPENAI_DEFAULT_MODEL', 'gpt-5.5');
 export const DEFAULT_ANTHROPIC_MODEL = envOr('ANTHROPIC_DEFAULT_MODEL', 'claude-sonnet-5-5');
@@ -25,41 +33,24 @@ let cached: ProviderChoice | null = null;
 
 function build(): ProviderChoice {
   const openrouterKey = process.env.OPENROUTER_API_KEY;
-  const geminiKey = process.env.GEMINI_API_KEY;
-
   const forced = envOr('MODEL_PROVIDER', 'auto').toLowerCase();
 
-  const openrouter = () => {
-    if (!openrouterKey) throw new Error('MODEL_PROVIDER=openrouter but OPENROUTER_API_KEY is not set');
-    return {
-      provider: new OpenRouterProvider(
-        envOr('OPENROUTER_MODEL', DEFAULT_OPENROUTER_MODEL),
-        openrouterKey,
-        envOr('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
-        envInt('OPENROUTER_CONTEXT_WINDOW', 128_000),
-      ),
-      reason: 'OPENROUTER_API_KEY is set',
-    };
+  if (forced !== 'auto' && forced !== 'openrouter') {
+    throw new Error(`platform credits only run on free OpenRouter models; MODEL_PROVIDER=${forced} is not allowed`);
+  }
+  if (!openrouterKey) throw new Error('platform credits only run on free OpenRouter models; set OPENROUTER_API_KEY');
+
+  return {
+    provider: new OpenRouterProvider(
+      envOr('OPENROUTER_MODEL', DEFAULT_PLATFORM_MODEL),
+      openrouterKey,
+      envOr('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
+      envInt('OPENROUTER_CONTEXT_WINDOW', 262_144),
+      'openrouter',
+      platformOptions(),
+    ),
+    reason: forced === 'openrouter' ? 'MODEL_PROVIDER=openrouter' : 'OPENROUTER_API_KEY is set',
   };
-
-  const gemini = () => {
-    if (!geminiKey) throw new Error('MODEL_PROVIDER=gemini but GEMINI_API_KEY is not set');
-    return {
-      provider: new GeminiProvider(
-        process.env.GEMINI_MODEL || process.env.MODEL || DEFAULT_GEMINI_MODEL,
-        envInt('GEMINI_CONTEXT_WINDOW', 1_000_000),
-      ),
-      reason: 'GEMINI_API_KEY is set',
-    };
-  };
-
-  if (forced === 'openrouter') return { ...openrouter(), reason: 'MODEL_PROVIDER=openrouter' };
-  if (forced === 'gemini') return { ...gemini(), reason: 'MODEL_PROVIDER=gemini' };
-
-  if (openrouterKey) return openrouter();
-  if (geminiKey) return gemini();
-
-  throw new Error('no model key configured — set OPENROUTER_API_KEY or GEMINI_API_KEY');
 }
 
 export type ProviderOverride = {
@@ -205,12 +196,14 @@ export function getNamingProvider(override?: ProviderOverride): ModelProvider {
     const key = process.env.OPENROUTER_API_KEY;
     if (!key) throw new Error('OPENROUTER_API_KEY is not set');
     return new OpenRouterProvider(
-      NAMING_MODEL_OPENROUTER,
+      NAMING_MODEL_OPENROUTER.endsWith(':free') ? NAMING_MODEL_OPENROUTER : platform.model,
       key,
       envOr('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
       envInt('OPENROUTER_CONTEXT_WINDOW', 128_000),
+      'openrouter',
+      platformOptions(),
     );
   }
 
-  return new GeminiProvider(NAMING_MODEL_GEMINI, envInt('GEMINI_CONTEXT_WINDOW', 1_000_000));
+  throw new Error('platform credits only run on free OpenRouter models; set OPENROUTER_API_KEY');
 }

@@ -10,6 +10,7 @@ import {
   type FileOps,
 } from '../compaction';
 import { addUsage, createUsage, looksLikeError, type ModelProvider, type ProviderEvent, type RunOptions, type ToolSpec } from './types';
+import { normalizeToolArgs } from './wire';
 
 let client: GoogleGenAI | null = null;
 
@@ -212,7 +213,7 @@ export class GeminiProvider implements ModelProvider {
 
           let args: Record<string, unknown>;
           try {
-            args = call.args ? JSON.parse(call.args) : {};
+            args = normalizeToolArgs(call.name, call.args ? JSON.parse(call.args) : {});
           } catch (error) {
             toolResults.push({
               type: 'function_result',

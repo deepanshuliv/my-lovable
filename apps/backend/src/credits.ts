@@ -118,7 +118,17 @@ export async function getCreditBalance(userId: string, includeInflight = false):
   };
 }
 
+const FREE_MODEL_CREDIT_PRICE = {
+  input: Number(process.env.FREE_MODEL_CREDIT_INPUT_PRICE_PER_M || '0.042'),
+  output: Number(process.env.FREE_MODEL_CREDIT_OUTPUT_PRICE_PER_M || '0.084'),
+};
+
 export function usageCostMicros(provider: ChargeableRun): number {
+  if (provider.model.endsWith(':free')) {
+    const notionalUsd =
+      (provider.usage.inputTokens * FREE_MODEL_CREDIT_PRICE.input + provider.usage.outputTokens * FREE_MODEL_CREDIT_PRICE.output) / 1_000_000;
+    return Math.ceil(notionalUsd * 1_000_000);
+  }
   const prices = PRICES_PER_MILLION[provider.name];
   const estimatedUsd =
     (provider.usage.unreportedInputTokens * prices.input + provider.usage.unreportedOutputTokens * prices.output) / 1_000_000;

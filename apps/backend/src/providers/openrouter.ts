@@ -9,6 +9,7 @@ import {
   type FileOps,
 } from '../compaction';
 import { addUsage, createUsage, looksLikeError, type ModelProvider, type ProviderEvent, type RunOptions, type ToolSpec } from './types';
+import { canonicalToolName, decodeArgs, decodeMarkers, encodeMarkers, looksLikeTextToolCall, normalizeToolArgs } from './wire';
 
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
@@ -19,6 +20,24 @@ const STREAM_DEADLINE_MS = Math.max(30_000, Number(process.env.STREAM_DEADLINE_S
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 export class OpenRouterStreamError extends Error {}
+
+export type RequestLimiter = () => Promise<void>;
+
+export type OpenRouterOptions = { freeOnly?: boolean; limiter?: RequestLimiter };
+
+const MAX_STREAM_RECOVERIES = 3;
+const MAX_EMPTY_RETRIES = 2;
+const MAX_TEXT_TOOL_NUDGES = 2;
+
+let sleep = (ms: number) => Bun.sleep(ms);
+
+export function setRetrySleep(fn: (ms: number) => Promise<void>) {
+  sleep = fn;
+}
+
+export function isFreeModel(model: string): boolean {
+  return model.endsWith(':free');
+}
 
 type StreamPass = {
   pending: Map<number, { id: string; name: string; args: string }>;
@@ -37,22 +56,23 @@ export function retryDelayMs(attempt: number, retryAfter?: string | null): numbe
   return Math.min(20_000, 1_500 * 2 ** attempt) + Math.floor(Math.random() * 500);
 }
 
-function fallbackModels(primary: string): string[] {
+function fallbackModels(primary: string, freeOnly: boolean): string[] {
   const extra = (process.env.OPENROUTER_FALLBACK_MODELS || '')
     .split(',')
     .map((model) => model.trim())
-    .filter((model) => model && model !== primary);
+    .filter((model) => model && model !== primary && (!freeOnly || isFreeModel(model)));
   return extra.length > 0 ? [primary, ...extra] : [];
 }
 
 export type CompatFlavor = 'openrouter' | 'openai' | 'anthropic' | 'deepseek';
 
-async function postWithRetry(url: string, init: RequestInit, label: string, onAttempt: () => void): Promise<Response> {
+async function postWithRetry(url: string, init: RequestInit, label: string, onAttempt: () => void, limiter?: RequestLimiter): Promise<Response> {
   const attempts = Math.max(1, Number(process.env.OPENROUTER_MAX_RETRIES || '4') + 1);
   let lastError = '';
   for (let attempt = 0; attempt < attempts; attempt++) {
     const isLast = attempt === attempts - 1;
     let response: Response;
+    if (limiter) await limiter();
     onAttempt();
     try {
       response = await fetch(url, init);
@@ -60,7 +80,7 @@ async function postWithRetry(url: string, init: RequestInit, label: string, onAt
       lastError = `${label} network error: ${String(error).slice(0, 200)}`;
       if (isLast) break;
       console.log(`[OPENROUTER_RETRY] ${label} network error, attempt ${attempt + 1}`);
-      await Bun.sleep(retryDelayMs(attempt));
+      await sleep(retryDelayMs(attempt));
       continue;
     }
     if (response.ok && response.body) return response;
@@ -71,8 +91,8 @@ async function postWithRetry(url: string, init: RequestInit, label: string, onAt
       break;
     }
     if (!RETRYABLE_STATUS.has(response.status) || isLast) break;
-    console.log(`[OPENROUTER_RETRY] ${label} ${response.status}, attempt ${attempt + 1}`);
-    await Bun.sleep(retryDelayMs(attempt, response.headers.get('retry-after')));
+    console.log(`[OPENROUTER_RETRY] ${label} ${response.status}, attempt ${attempt + 1}: ${body.slice(0, 200)}`);
+    await sleep(retryDelayMs(attempt, response.headers.get('retry-after')));
   }
   throw new Error(lastError);
 }
@@ -89,6 +109,17 @@ type ToolCallPayload = {
   type: 'function';
   function: { name: string; arguments: string };
 };
+
+function encodeMessage(message: ChatMessage): ChatMessage {
+  if ('tool_calls' in message && message.tool_calls) {
+    return {
+      ...message,
+      content: message.content === null ? null : encodeMarkers(message.content),
+      tool_calls: message.tool_calls.map((call) => ({ ...call, function: { ...call.function, arguments: encodeMarkers(call.function.arguments) } })),
+    };
+  }
+  return { ...message, content: encodeMarkers(message.content as string) } as ChatMessage;
+}
 
 function toOpenAITools(tools: ToolSpec[]) {
   return tools.map((tool) => ({
@@ -109,8 +140,23 @@ export class OpenRouterProvider implements ModelProvider {
 
   private apiKey: string;
   private baseUrl: string;
+  private freeOnly: boolean;
+  private limiter?: RequestLimiter;
+  private spendViolation: string | null = null;
 
-  constructor(model: string, apiKey: string, baseUrl = DEFAULT_BASE_URL, contextWindow = 128_000, flavor: CompatFlavor = 'openrouter') {
+  constructor(
+    model: string,
+    apiKey: string,
+    baseUrl = DEFAULT_BASE_URL,
+    contextWindow = 128_000,
+    flavor: CompatFlavor = 'openrouter',
+    options: OpenRouterOptions = {},
+  ) {
+    if (options.freeOnly && !isFreeModel(model)) {
+      throw new Error(`platform credits only run on free models, and ${model} is not a :free model`);
+    }
+    this.freeOnly = Boolean(options.freeOnly);
+    this.limiter = options.limiter;
     this.name = flavor;
     this.model = model;
     this.apiKey = apiKey;
@@ -123,7 +169,7 @@ export class OpenRouterProvider implements ModelProvider {
   }
 
   async complete(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string> {
-    const models = this.isOpenRouter ? fallbackModels(this.model) : [];
+    const models = this.isOpenRouter ? fallbackModels(this.model, this.freeOnly) : [];
     const response = await postWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -140,25 +186,34 @@ export class OpenRouterProvider implements ModelProvider {
         ],
         ...(this.name === 'openai' ? { max_completion_tokens: Math.max(maxTokens, 256) } : { max_tokens: maxTokens }),
         stream: false,
-        ...(this.isOpenRouter ? { usage: { include: true }, reasoning: { enabled: false } } : {}),
+        ...(this.isOpenRouter ? { usage: { include: true }, reasoning: { enabled: false }, ...this.priceCap() } : {}),
       }),
-    }, `${this.name} complete`, () => this.usage.requests++);
+    }, `${this.name} complete`, () => this.usage.requests++, this.limiter);
 
     const data = (await response.json()) as {
       choices?: { message?: { content?: string } }[];
       usage?: OpenRouterUsage;
     };
     this.recordUsage(data.usage);
-    return data.choices?.[0]?.message?.content ?? '';
+    if (this.spendViolation) throw new Error(this.spendViolation);
+    return decodeMarkers(data.choices?.[0]?.message?.content ?? '');
+  }
+
+  private priceCap() {
+    return this.freeOnly ? { provider: { max_price: { prompt: 0, completion: 0 } } } : {};
   }
 
   private recordUsage(usage?: OpenRouterUsage) {
     if (!usage) return;
     addUsage(this.usage, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0, usage.cost);
+    if (this.freeOnly && typeof usage.cost === 'number' && usage.cost > 0 && !this.spendViolation) {
+      this.spendViolation = `refused paid usage on the platform key: ${this.model} reported $${usage.cost}`;
+      console.log('[SPEND_GUARD] , ', this.spendViolation);
+    }
   }
 
   private async openStream(messages: ChatMessage[], tools: ToolSpec[]): Promise<Response> {
-    const models = this.isOpenRouter ? fallbackModels(this.model) : [];
+    const models = this.isOpenRouter ? fallbackModels(this.model, this.freeOnly) : [];
     return await postWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -171,7 +226,7 @@ export class OpenRouterProvider implements ModelProvider {
       body: JSON.stringify({
         model: this.model,
         ...(models.length > 0 ? { models } : {}),
-        messages,
+        messages: messages.map(encodeMessage),
         tools: toOpenAITools(tools),
         tool_choice: 'auto',
         stream: true,
@@ -183,13 +238,14 @@ export class OpenRouterProvider implements ModelProvider {
                 require_parameters: true,
                 sort: 'throughput',
                 allow_fallbacks: true,
+                ...(this.freeOnly ? { max_price: { prompt: 0, completion: 0 } } : {}),
               },
             }
           : { stream_options: { include_usage: true } }),
         ...(this.name === 'openai' ? { max_completion_tokens: MAX_OUTPUT_TOKENS } : { max_tokens: MAX_OUTPUT_TOKENS }),
       }),
       signal: AbortSignal.timeout(STREAM_DEADLINE_MS),
-    }, `${this.name} stream`, () => this.usage.requests++);
+    }, `${this.name} stream`, () => this.usage.requests++, this.limiter);
   }
 
   private async *readChunks(response: Response): AsyncGenerator<any> {
@@ -219,7 +275,8 @@ export class OpenRouterProvider implements ModelProvider {
             continue;
           }
           if (chunk?.error) {
-            throw new OpenRouterStreamError(`openrouter stream error: ${JSON.stringify(chunk.error).slice(0, 300)}`);
+            const code = typeof chunk.error.code === 'number' ? ` ${chunk.error.code}` : '';
+            throw new OpenRouterStreamError(`openrouter stream${code}: ${JSON.stringify({ error: chunk.error }).slice(0, 300)}`);
           }
           yield chunk;
         }
@@ -318,7 +375,7 @@ export class OpenRouterProvider implements ModelProvider {
 
       if (typeof delta.content === 'string' && delta.content.length > 0) {
         pass.assistantText += delta.content;
-        yield { type: 'text_delta', text: delta.content };
+        yield { type: 'text_delta', text: decodeMarkers(delta.content) };
 
         if (contextBudget
           ? contextBudget.shouldCompact(baseTokens + estimateTokens(pass.assistantText), estimateTokens(JSON.stringify(tools)))
@@ -362,6 +419,9 @@ export class OpenRouterProvider implements ModelProvider {
 
     let turns = 0;
     let resumeAfterCompaction = false;
+    let recoveries = 0;
+    let emptyRetries = 0;
+    let textToolNudges = 0;
 
     while (true) {
       if (isCancelled()) {
@@ -402,13 +462,14 @@ export class OpenRouterProvider implements ModelProvider {
       let response!: Response;
       let pass = newStreamPass();
       let streamFailure: string | null = null;
+      let interrupted = false;
 
       for (let streamAttempt = 0; ; streamAttempt++) {
         pass = newStreamPass();
         try {
           response = await this.openStream(state.messages, tools);
         } catch (error) {
-          streamFailure = String(error);
+          streamFailure = error instanceof Error ? error.message : String(error);
           break;
         }
         try {
@@ -416,15 +477,29 @@ export class OpenRouterProvider implements ModelProvider {
           streamFailure = null;
           break;
         } catch (error) {
-          if (!(error instanceof OpenRouterStreamError)) throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          if (this.spendViolation) break;
           if (pass.assistantText === '' && pass.pending.size === 0 && streamAttempt < 3) {
-            console.log(`[OPENROUTER_RETRY] stream error before any output, attempt ${streamAttempt + 1}`);
-            await Bun.sleep(retryDelayMs(streamAttempt));
+            console.log(`[OPENROUTER_RETRY] stream failed before any output, attempt ${streamAttempt + 1}: ${message.slice(0, 160)}`);
+            await sleep(retryDelayMs(streamAttempt));
             continue;
           }
-          streamFailure = error.message;
+          if (recoveries < MAX_STREAM_RECOVERIES) {
+            recoveries++;
+            interrupted = true;
+            console.log(`[OPENROUTER_RECOVER] stream cut off after partial output: ${message.slice(0, 160)}`);
+            break;
+          }
+          streamFailure = message;
           break;
         }
+      }
+
+      if (this.spendViolation) {
+        response?.body?.cancel().catch(() => {});
+        yield { type: 'error', message: this.spendViolation };
+        yield { type: 'finished', reason: 'error' };
+        return;
       }
 
       if (streamFailure) {
@@ -436,6 +511,17 @@ export class OpenRouterProvider implements ModelProvider {
       const { pending, assistantText, finishReason } = pass;
       const overflowedMidStream = pass.overflowed;
 
+      if (interrupted) {
+        if (assistantText) state.messages.push({ role: 'assistant', content: assistantText });
+        state.messages.push({
+          role: 'user',
+          content: pending.size > 0
+            ? 'Your last response was cut off by a connection problem while you were writing a tool call, so that call did not run. Issue it again in full.'
+            : 'Your last response was cut off by a connection problem. Continue exactly where it stopped without repeating yourself.',
+        });
+        continue;
+      }
+
       if (overflowedMidStream) {
         response.body?.cancel().catch(() => {});
         if (assistantText) state.messages.push({ role: 'assistant', content: assistantText });
@@ -446,6 +532,23 @@ export class OpenRouterProvider implements ModelProvider {
       }
 
       if (pending.size === 0) {
+        if (assistantText.trim() === '' && emptyRetries < MAX_EMPTY_RETRIES) {
+          emptyRetries++;
+          console.log(`[OPENROUTER_RETRY] empty completion, attempt ${emptyRetries}`);
+          continue;
+        }
+        if (textToolNudges < MAX_TEXT_TOOL_NUDGES && looksLikeTextToolCall(assistantText, tools.map((tool) => tool.name))) {
+          textToolNudges++;
+          console.log('[OPENROUTER_RECOVER] tool call written as text');
+          state.messages.push(
+            { role: 'assistant', content: assistantText },
+            {
+              role: 'user',
+              content: 'You wrote a tool call as plain text, so nothing ran. Call tools through the tool-calling API as structured tool calls, never inside your reply text. Make the call now.',
+            },
+          );
+          continue;
+        }
         yield { type: 'finished', reason: finishReason ?? 'stop' };
         return;
       }
@@ -455,7 +558,7 @@ export class OpenRouterProvider implements ModelProvider {
         .map(([index, call]) => ({
           id: call.id || `call_${index}`,
           type: 'function' as const,
-          function: { name: call.name, arguments: call.args || '{}' },
+          function: { name: canonicalToolName(call.name, tools.map((tool) => tool.name)), arguments: call.args || '{}' },
         }));
 
       state.messages.push({ role: 'assistant', content: assistantText || null, tool_calls: calls });
@@ -465,15 +568,20 @@ export class OpenRouterProvider implements ModelProvider {
       for (const call of calls) {
         let args: Record<string, unknown>;
         try {
-          args = JSON.parse(call.function.arguments || '{}');
+          const parsed = JSON.parse(call.function.arguments || '{}');
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('arguments must be a JSON object');
+          args = normalizeToolArgs(call.function.name, decodeArgs(parsed) as Record<string, unknown>);
         } catch (error) {
-          const message = `ERROR: could not parse arguments as JSON: ${error}`;
+          const message = finishReason === 'length'
+            ? 'ERROR: your response hit the output length limit, so the arguments of this tool call were cut off and nothing ran. Split the work: write smaller files (under 300 lines each) or make several smaller edits.'
+            : `ERROR: the arguments of this tool call were cut off or are not valid JSON (${String(error).slice(0, 120)}), so nothing ran. Re-issue the call with complete JSON. If the content contains a chat tag such as ‹/think› or ‹/tool_call›, write it exactly in that ‹ › form.`;
           yield { type: 'tool_result', id: call.id, name: call.function.name, result: message, isError: true };
           state.messages.push({ role: 'tool', tool_call_id: call.id, content: message });
           continue;
         }
 
-        if (typeof args.comand === 'string') trackFileOps(state.fileOps, args.comand);
+        const shellCommand = args.comand;
+        if (typeof shellCommand === 'string') trackFileOps(state.fileOps, shellCommand);
 
         yield { type: 'tool_call', id: call.id, name: call.function.name, args };
 

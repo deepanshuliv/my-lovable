@@ -41,3 +41,7 @@ export const projectLeftKey = (projectId: string) => `project:${projectId}:left`
 export const upgradeOfferedKey = (projectId: string) => `project:${projectId}:upgrade-offered`;
 
 export const inflightCreditsKey = (userId: string) => `credits:inflight:${userId}`;
+
+export const freeQuotaMinuteKey = (minute: number) => `freequota:min:${minute}`;
+
+export const freeQuotaDayKey = (day: string) => `freequota:day:${day}`;
