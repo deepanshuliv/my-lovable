@@ -34,7 +34,8 @@ import {
   TEMPLATE_SOURCE,
 } from './src/config';
 import { createEmitter, emitDetached } from './src/utils/events';
-import { BYOK_MODELS, describeProvider, type ProviderOverride } from './src/providers';
+import { BYOK_MODELS, describeProvider, PLATFORM_FREE_ONLY, type ProviderOverride } from './src/providers';
+import { DAILY_LIMIT_MESSAGE, freeDailyQuotaExhausted } from './src/freeQuota';
 import { deriveTitle, fallbackTitle, generateProjectTitle, looksLikePrompt } from './src/utils/naming';
 import {
   deleteUserKey,
@@ -288,6 +289,13 @@ app.post('/chat/:projectId', requireProjectAccess, async (req: Request, res: Res
     } catch (error) {
       console.log('[CREDITS_CHECK_FAILED] , ', String(error).slice(0, 200));
     }
+  }
+
+  if (!byok && PLATFORM_FREE_ONLY && (await freeDailyQuotaExhausted())) {
+    return res.status(503).json({
+      msg: friendlyError(DAILY_LIMIT_MESSAGE),
+      code: 'free_daily_limit',
+    });
   }
 
   const forcePlatformProvider = byok || !process.env.OPENROUTER_API_KEY ? undefined : 'openrouter';

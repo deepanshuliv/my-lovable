@@ -80,3 +80,30 @@ describe('sanitizeErrorPayload', () => {
     expect(sanitizeErrorPayload('p', 'error', payload)).toBe(payload);
   });
 });
+
+describe('free platform model failures', () => {
+  test('the daily free-model cap says when it resets, without raw JSON', () => {
+    const out = friendlyError('OpenRouter daily request limit reached for this key; it resets at 00:00 UTC. {"error":{"message":"Rate limit exceeded: free-models-per-day","code":429}}');
+    expect(out).toContain('usage limit');
+    expect(out).toContain('00:00 UTC');
+    expect(out).not.toContain('{');
+  });
+
+  test('a free model that is no longer served is explained', () => {
+    const out = friendlyError('openrouter stream 404: {"error":{"message":"No endpoints found for poolside/laguna-s-2.1:free.","code":404}}');
+    expect(out).toMatch(/free AI model is not available/);
+    expect(out).not.toContain('{');
+  });
+
+  test('per-minute limits that outlast every retry read as busy, not as an error dump', () => {
+    const out = friendlyError('openrouter stream 429: {"error":{"message":"Rate limit exceeded: free-models-per-min","code":429}}');
+    expect(out).toContain('usage limit');
+    expect(out).not.toContain('{');
+  });
+
+  test('the spend guard never shows internals', () => {
+    const out = friendlyError('refused paid usage on the platform key: poolside/x reported $0.0004');
+    expect(out).toContain('usage limit');
+    expect(out).not.toContain('$0.0004');
+  });
+});
