@@ -4,6 +4,7 @@ import { QUESTION_TIMEOUT_MS } from '../config';
 import { executeCommand, getCachedSandbox } from '../sandbox';
 import { isValidSecretKey } from '../utils/secrets';
 import { routeNote } from '../agentGuards';
+import { cssImportWarning, easeArrayWarning, fileSizeNote, lucideImports, lucideWarning, missingImportWarning, strayCdPrefix } from './codeChecks';
 
 function isSecretProbe(command: string): boolean {
   if (!command) return false;
@@ -106,12 +107,39 @@ async function runBashTool(
     return 'ERROR: this is plan mode, which is read-only — that command would change something. Investigate with read-only commands (read_file, list_dir, search_code, bash_tool) and describe the change in your plan instead. The user will switch to build mode to have it implemented.';
   }
 
-  const result = await executeCommand(projectId, command);
+  const rootDir = getCachedSandbox(projectId)?.rootDir;
+  const stray = rootDir ? strayCdPrefix(command, rootDir) : null;
+  const note = stray ? `NOTE: skipped \`cd ${stray.skipped}\`. Every command already runs in the project root (${rootDir}); never cd elsewhere.\n` : '';
+  const result = await executeCommand(projectId, stray ? stray.command : command);
 
   if (result.exitCode !== 0) {
-    return `ERROR: exit ${result.exitCode}\n${result.output}`.trimEnd();
+    return `ERROR: exit ${result.exitCode}\n${note}${result.output}`.trimEnd();
   }
-  return result.output.trimEnd();
+  return `${note}${result.output}`.trimEnd();
+}
+
+async function codeWarnings(projectId: string, path: string, content: string): Promise<string[]> {
+  const icons = lucideImports(content);
+  let exists: ((name: string) => boolean) | undefined;
+  if (icons.length > 0) {
+    const lookup = await executeCommand(
+      projectId,
+      `f=node_modules/lucide-react/dist/lucide-react.d.ts; test -f $f && for n in ${icons.join(' ')}; do grep -q "declare const $n:" $f || echo "$n"; done`,
+    ).catch(() => null);
+    if (lookup && lookup.exitCode === 0) {
+      const missing = new Set(lookup.output.split('\n').map((line) => line.trim()).filter(Boolean));
+      exists = (name) => !missing.has(name);
+    }
+  }
+  return [
+    clientDirectiveWarning(path, content),
+    serverFetchWarning(path, content),
+    missingImportWarning(path, content),
+    lucideWarning(path, content, exists),
+    easeArrayWarning(path, content),
+    cssImportWarning(path, content),
+    fileSizeNote(path, content),
+  ].filter((warning): warning is string => Boolean(warning));
 }
 
 async function writeFile(
@@ -135,9 +163,9 @@ async function writeFile(
     return `ERROR writing ${cleanPath}: ${result.output}`;
   }
   const lineCount = (content ?? '').split('\n').length;
-  const warning = clientDirectiveWarning(cleanPath, content ?? '') ?? serverFetchWarning(cleanPath, content ?? '') ?? helperLocationNote(cleanPath);
+  const warnings = [...(await codeWarnings(projectId, cleanPath, content ?? '')), helperLocationNote(cleanPath)].filter(Boolean);
   const note = routeNote(cleanPath);
-  return `Successfully wrote ${cleanPath} (${lineCount} lines)${note ? ` ${note}` : ''}${warning ? `\n${warning}` : ''}`;
+  return `Successfully wrote ${cleanPath} (${lineCount} lines)${note ? ` ${note}` : ''}${warnings.length > 0 ? `\n${warnings.join('\n')}` : ''}`;
 }
 
 export function normalizeProjectPath(raw: string, rootDir?: string): string {
@@ -253,8 +281,8 @@ async function editFile(
   if (writeRes.exitCode !== 0) {
     return `ERROR writing updated ${cleanPath}: ${writeRes.output}`;
   }
-  const warning = clientDirectiveWarning(cleanPath, updated) ?? serverFetchWarning(cleanPath, updated);
-  return `Successfully updated ${cleanPath} (replaced ${targetContent.split('\n').length} lines with ${(replacementContent ?? '').split('\n').length} lines)${warning ? `\n${warning}` : ''}`;
+  const warnings = await codeWarnings(projectId, cleanPath, updated);
+  return `Successfully updated ${cleanPath} (replaced ${targetContent.split('\n').length} lines with ${(replacementContent ?? '').split('\n').length} lines)${warnings.length > 0 ? `\n${warnings.join('\n')}` : ''}`;
 }
 
 async function readFile(
