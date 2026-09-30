@@ -1,6 +1,8 @@
 import type { Response } from 'express';
 import { emitEvent } from '@repo/redis';
 import { redactDeep, type EventType } from '@repo/shared';
+import { rememberEvent } from './recentEvents';
+import { sanitizeErrorPayload } from './userErrors';
 
 export type Emitter = {
   projectId: string;
@@ -16,7 +18,8 @@ export async function emitDetached(
   payload: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await emitEvent(projectId, type, redactDeep(projectId, payload));
+    const event = await emitEvent(projectId, type, redactDeep(projectId, sanitizeErrorPayload(projectId, type, payload)));
+    rememberEvent(projectId, event);
   } catch (error) {
     console.log('[DETACHED_EMIT_FAILED] , ', String(error).slice(0, 200));
   }
@@ -31,7 +34,6 @@ export function createEmitter(projectId: string, res: Response): Emitter {
     try {
       res.write(`data: ${JSON.stringify({ type, ...payload })}\n\n`);
     } catch (error) {
-      
       console.log('[SSE_WRITE] , ', String(error).slice(0, 120));
       closed = true;
     }
@@ -41,22 +43,22 @@ export function createEmitter(projectId: string, res: Response): Emitter {
     projectId,
 
     async emit(type, payload) {
-      const safe = redactDeep(projectId, payload);
+      const safe = redactDeep(projectId, sanitizeErrorPayload(projectId, type, payload));
       write(type, safe);
 
       try {
         const event = await emitEvent(projectId, type, safe);
+        rememberEvent(projectId, event);
         highestSeq = Math.max(highestSeq, event.seq);
         return event.seq;
       } catch (error) {
-        
         console.log('[STREAM_WRITE_FAILED] , ', String(error).slice(0, 200));
         return highestSeq;
       }
     },
 
     stream(type, payload) {
-      write(type, redactDeep(projectId, payload));
+      write(type, redactDeep(projectId, sanitizeErrorPayload(projectId, type, payload)));
     },
 
     lastSeq() {

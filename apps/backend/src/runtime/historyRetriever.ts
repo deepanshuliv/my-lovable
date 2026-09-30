@@ -1,4 +1,5 @@
 import { prisma } from '@repo/db';
+import type { RecentEvent } from '@repo/memory';
 import { eventFromPersistedRow, type EventReader, type EventStore, type ExecutionEvent } from './eventStore';
 
 export type RetrievalFilters = {
@@ -34,7 +35,6 @@ function excerpt(text: string): string {
   return text.length > 1_600 ? `${text.slice(0, 800)}\n… [event excerpt truncated] …\n${text.slice(-800)}` : text;
 }
 
-/** Lexical retrieval boundary. A future FTS/vector implementation can replace the source. */
 export class HistoryRetriever {
   constructor(private readonly source: EventReader | EventStore) {}
 
@@ -43,8 +43,6 @@ export class HistoryRetriever {
     if (wanted.length === 0) return [];
     const all = await this.source.all(filters.sessionId);
     const filtered = all.filter((event) => {
-      // Legacy events predate correlation metadata. The source has already scoped them to
-      // the requested session, so missing task metadata remains eligible for recall.
       if (filters.taskId && event.correlation.taskId && event.correlation.taskId !== filters.taskId) return false;
       if (filters.runId && event.correlation.runId && event.correlation.runId !== filters.runId) return false;
       if (filters.eventTypes && !filters.eventTypes.includes(event.type)) return false;
@@ -90,30 +88,65 @@ export class HistoryRetriever {
   }
 }
 
+export type RecentEventSource = (sessionId: string) => Promise<RecentEvent[]>;
+
+function fromRecent(event: RecentEvent): ExecutionEvent | null {
+  return eventFromPersistedRow({
+    id: event.streamId ?? `recent-${event.seq}`,
+    seq: event.seq,
+    type: event.type,
+    payload: event.payload,
+    createdAt: new Date(event.createdAt),
+  });
+}
+
+function toEvents(rows: Parameters<typeof eventFromPersistedRow>[0][]): ExecutionEvent[] {
+  return rows.flatMap((row) => {
+    const event = eventFromPersistedRow(row);
+    return event ? [event] : [];
+  });
+}
+
 export class PrismaEventReader implements EventReader {
+  constructor(private readonly recentSource?: RecentEventSource) {}
+
+  private async withRecent(
+    sessionId: string,
+    persisted: () => Promise<ExecutionEvent[]>,
+  ): Promise<ExecutionEvent[]> {
+    const recent = this.recentSource ? await this.recentSource(sessionId).catch(() => []) : [];
+    let durable: ExecutionEvent[];
+    try {
+      durable = await persisted();
+    } catch (error) {
+      if (recent.length === 0) throw error;
+      console.log('[EVENTS_POSTGRES_UNAVAILABLE] serving recent events from memory , ', String(error).slice(0, 160));
+      return recent.flatMap((event) => fromRecent(event) ?? []);
+    }
+    const highest = durable.reduce((max, event) => Math.max(max, event.seq), 0);
+    const tail = recent.filter((event) => event.seq > highest).flatMap((event) => fromRecent(event) ?? []);
+    return [...durable, ...tail];
+  }
+
   async all(sessionId: string): Promise<ExecutionEvent[]> {
-    const rows = await prisma.event.findMany({
-      where: { projectId: sessionId },
-      orderBy: { seq: 'asc' },
-      take: 2_000,
-    });
-    return rows.flatMap((row) => {
-      const event = eventFromPersistedRow(row);
-      return event ? [event] : [];
-    });
+    return await this.withRecent(sessionId, async () =>
+      toEvents(await prisma.event.findMany({
+        where: { projectId: sessionId },
+        orderBy: { seq: 'asc' },
+        take: 2_000,
+      })),
+    );
   }
 
   async recent(sessionId: string, limit: number): Promise<ExecutionEvent[]> {
-    const rows = await prisma.event.findMany({
-      where: { projectId: sessionId },
-      orderBy: { seq: 'desc' },
-      take: Math.max(1, Math.min(limit, 200)),
-    });
-    return rows
-      .flatMap((row) => {
-        const event = eventFromPersistedRow(row);
-        return event ? [event] : [];
-      })
-      .reverse();
+    const bounded = Math.max(1, Math.min(limit, 200));
+    const events = await this.withRecent(sessionId, async () =>
+      toEvents(await prisma.event.findMany({
+        where: { projectId: sessionId },
+        orderBy: { seq: 'desc' },
+        take: bounded,
+      })).reverse(),
+    );
+    return events.slice(-bounded);
   }
 }

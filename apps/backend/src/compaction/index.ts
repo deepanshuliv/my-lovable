@@ -99,8 +99,6 @@ export async function summarize(
     )).trim();
     if (summary.length > 0) return summary + formatFileOperations([...fileOps.read], [...fileOps.modified]);
   } catch (error) {
-    // Compaction is a continuity optimisation. A provider outage must not erase the
-    // in-memory history or prevent the provider from attempting a deterministic rebuild.
     console.log('[COMPACTION_PROVIDER_FAILED] , ', String(error).slice(0, 240));
   }
 
@@ -119,7 +117,6 @@ export function findCutPoint(parts: ConversationPart[], keepTokens = KEEP_RECENT
   for (let i = parts.length - 1; i >= 0; i--) {
     accumulated += estimateTokens(parts[i]!.content);
     if (accumulated >= keepTokens) {
-      
       return Math.min(i + 1, parts.length - 1);
     }
   }

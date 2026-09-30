@@ -1,4 +1,3 @@
-
 export type MemoryRole = 'user' | 'assistant' | 'system' | 'tool';
 
 export type MemoryMessage = {
@@ -13,6 +12,14 @@ export type LongTermMemory = {
   topics?: string[];
 };
 
+export type RecentEvent = {
+  seq: number;
+  type: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+  streamId?: string;
+};
+
 export interface MemoryStore {
     readonly kind: 'iris' | 'redis-fallback';
 
@@ -25,4 +32,8 @@ export interface MemoryStore {
     rememberFact(projectId: string, text: string, topics?: string[]): Promise<void>;
 
   clearSession(projectId: string): Promise<void>;
+
+  appendEvents(projectId: string, events: RecentEvent[]): Promise<void>;
+
+  recentEvents(projectId: string, limit: number): Promise<RecentEvent[]>;
 }

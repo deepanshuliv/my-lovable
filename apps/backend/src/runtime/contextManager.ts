@@ -30,7 +30,6 @@ function eventExcerpt(event: ExecutionEvent): string {
   return `- #${event.seq} ${event.type}: ${raw.length > 700 ? `${raw.slice(0, 700)}…` : raw}`;
 }
 
-/** Builds a bounded active view instead of replaying a complete conversation. */
 export class ContextManager {
   constructor(
     private readonly states: TaskStateManager,
@@ -131,9 +130,7 @@ export class ContextManager {
       recentEvents: additionalTokens + recentTokens,
       retrievedHistory: retrievedTokens,
     });
-    // Category estimates intentionally round each section independently. If that rounding
-    // leaves a few tokens over the hard invariant, discard the lowest-priority optional
-    // section before returning; mandatory task information is never dropped.
+
     while (!budget.fits && optionalParts.length > 0) {
       const removed = optionalParts.pop() ?? '';
       if (removed.startsWith('<retrieved-history>')) retrievedTokens = 0;

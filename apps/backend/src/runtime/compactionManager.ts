@@ -76,7 +76,6 @@ function bounded(summary: CompactedSummary): CompactedSummary {
   let result = structuredClone(summary);
   if (summaryText(result).length <= MAX_SUMMARY_CHARS) return result;
 
-  // Preserve the durable high-value fields first; trim only repeatable detail.
   result = {
     ...result,
     completedWork: result.completedWork.slice(-30),
@@ -105,7 +104,6 @@ function bounded(summary: CompactedSummary): CompactedSummary {
   return result;
 }
 
-/** Versioned structured compaction with failure isolation and deterministic fallback. */
 export class CompactionManager {
   constructor(
     private readonly summaries: SummaryRepository,
@@ -167,8 +165,6 @@ export class CompactionManager {
       }, request);
       return { summary: saved, usedFallback, tokensBefore, tokensAfter: estimate(summaryText(saved)) };
     } catch (error) {
-      // The previous valid summary remains untouched if persistence fails. Do not return a
-      // fake successful summary because a caller may use this result to rebuild context.
       await this.safeEvent('compaction_failed', {
         taskId: request.taskId,
         message: `summary persistence failed: ${String(error).slice(0, 500)}`,

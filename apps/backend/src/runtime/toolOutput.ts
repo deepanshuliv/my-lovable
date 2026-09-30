@@ -61,7 +61,6 @@ function boundedPreview(stdout: string, stderr: string): string {
   return `${head}\n… [tool output externalized] …${diagnostic}\n${tail}`.slice(0, PREVIEW_LIMIT);
 }
 
-/** Keeps the model-facing observation bounded while retaining the raw result by id. */
 export class ToolOutputManager {
   constructor(
     private readonly repository: ToolOutputRepository,
@@ -75,8 +74,7 @@ export class ToolOutputManager {
     result: string | RawToolOutput,
   ): Promise<BoundedToolOutput> {
     const raw: RawToolOutput = typeof result === 'string' ? { stdout: result } : result;
-    // Raw observations are durable, so apply the same project-scoped redaction used by
-    // SSE/event payloads before writing them to the output store.
+
     const stdout = redact(taskId, raw.stdout ?? '');
     const stderr = redact(taskId, raw.stderr ?? '');
     const combined = `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ''}`;
@@ -111,11 +109,19 @@ export class ToolOutputManager {
     };
   }
 
-  async retrieve(id: string, start = 0, end?: number): Promise<string> {
+  async retrieve(id: string, start = 0, end?: number, sessionId?: string): Promise<string> {
     const record = await this.repository.load(id);
-    if (!record) throw new Error(`tool output ${id} not found`);
+    if (!record || (sessionId && record.sessionId !== sessionId)) {
+      throw new Error(`tool output ${id} not found in this project; only use output_id values that a tool result gave you`);
+    }
     const combined = `${record.stdout}${record.stderr ? `\n[stderr]\n${record.stderr}` : ''}`;
-    return combined.slice(Math.max(0, start), end);
+    const from = start < 0 ? Math.max(0, combined.length + start) : start;
+    const maxSlice = Math.max(1, Math.floor(this.inlineLimit * 0.8));
+    const to = Math.min(end ?? combined.length, from + maxSlice, combined.length);
+    const slice = combined.slice(from, to);
+    return to < combined.length
+      ? `${slice}\n[showing characters ${from}-${to} of ${combined.length}; call read_tool_output with start=${to} for more]`
+      : slice;
   }
 }
 

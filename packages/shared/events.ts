@@ -1,4 +1,3 @@
-
 export type EventType =
   | 'user_query'
   | 'text'
@@ -7,6 +6,7 @@ export type EventType =
   | 'question'
   | 'answer'
   | 'running'
+  | 'sandbox_status'
   | 'done'
   | 'error'
   | 'preview_ready'
@@ -15,6 +15,8 @@ export type EventType =
     | 'compaction'
     | 'summarization'
     | 'secrets_required'
+  | 'keys_request'
+  | 'keys_status'
   | 'verification'
   | 'client_errors'
   | 'task_created'

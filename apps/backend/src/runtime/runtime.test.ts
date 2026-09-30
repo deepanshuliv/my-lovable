@@ -87,7 +87,16 @@ describe('ToolOutputManager', () => {
     expect(result.text).toContain('output_id=');
     expect(result.text).toContain('important failure');
     expect(repository.size()).toBe(1);
-    expect((await manager.retrieve(result.outputId!)).length).toBeGreaterThan(1_000_000);
+    const firstSlice = await manager.retrieve(result.outputId!);
+    expect(firstSlice).toContain('call read_tool_output with start=80');
+    let reassembled = '';
+    for (let start = 0; ; start += 80) {
+      const slice = await manager.retrieve(result.outputId!, start, start + 80);
+      reassembled += slice.split('\n[showing characters')[0];
+      if (!slice.includes('[showing characters')) break;
+    }
+    expect(reassembled).toBe(`${huge}\n[stderr]\nTypeError: broken`);
+    await expect(manager.retrieve(result.outputId!, 0, undefined, 'other-session')).rejects.toThrow('not found');
     const tenMegabytes = await manager.capture('task', 'session', 'large command', 'y'.repeat(10_000_000));
     expect(tenMegabytes.truncated).toBe(true);
     expect(tenMegabytes.text.length).toBeLessThan(9_000);
@@ -254,7 +263,6 @@ describe('forced small-context long-running integration', () => {
     }
     await firstRuntimeStates.update('long-task', { filesTouched: ['src/agent.ts', 'src/runtime.ts'], currentState: 'Repairing after a verification failure.', verificationState: { status: 'failed', checks: { typecheck: false }, lastOutput: 'type error', failureCount: 1 } });
 
-    // Process death: only the durable repositories survive; every runtime-facing manager is new.
     const resumedStates = new TaskStateManager(stateRepository);
     const resumedEvents = new InMemoryEventStore();
     for (const event of durableEvents.eventsFor('long-session')) await resumedEvents.append({ type: event.type, payload: event.payload, correlation: event.correlation });

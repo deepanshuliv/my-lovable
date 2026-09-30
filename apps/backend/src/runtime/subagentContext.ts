@@ -29,7 +29,6 @@ function list(items: string[]): string {
   return items.length ? items.map((item) => `- ${item}`).join('\n') : '- (none)';
 }
 
-/** Purpose-specific subagent input/output. It deliberately has no transcript field. */
 export class SubagentContextManager {
   constructor(private readonly budget: ContextBudgetManager) {}
 
@@ -74,7 +73,6 @@ export class SubagentContextManager {
   }
 }
 
-/** Runs isolated exploratory work and returns only a structured, bounded result to the parent. */
 export class SubagentManager {
   constructor(
     private readonly contexts: SubagentContextManager,

@@ -1,4 +1,3 @@
-
 const MASK = '[redacted]';
 
 const registry = new Map<string, Set<string>>();

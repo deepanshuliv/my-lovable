@@ -127,7 +127,6 @@ function isStatus(value: unknown): value is TaskStatus {
   return value === 'pending' || value === 'running' || value === 'completed' || value === 'failed' || value === 'blocked';
 }
 
-/** Runtime validation at the persistence boundary prevents malformed JSON from becoming active state. */
 export function validateTaskState(input: unknown): TaskState {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('persisted task state is not an object');
   const state = input as Partial<TaskState>;
@@ -176,7 +175,6 @@ export function createInitialTaskState(
   };
 }
 
-/** Durable, optimistic-concurrency-protected owner of the current task state. */
 export class TaskStateManager {
   constructor(private readonly repository: TaskStateRepository) {}
 
@@ -197,8 +195,6 @@ export class TaskStateManager {
     try {
       return await this.repository.create(initial);
     } catch (error) {
-      // Another request may have created the task between load and create. Reloading is
-      // safe and makes this operation idempotent without hiding unrelated failures.
       const raced = await this.load(taskId);
       if (raced) return raced;
       throw error;

@@ -10,7 +10,6 @@ export type VerificationResultLike = {
 
 export type VerificationRunner = () => Promise<VerificationResultLike>;
 
-/** Converts verification evidence into durable task state and observable events. */
 export class VerificationManager {
   constructor(
     private readonly states: TaskStateManager,

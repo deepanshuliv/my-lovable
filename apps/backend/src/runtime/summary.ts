@@ -123,7 +123,12 @@ export class InMemorySummaryRepository implements SummaryRepository {
 
 export class PrismaSummaryRepository implements SummaryRepository {
   async latest(taskId: string): Promise<StoredSummary | null> {
-    const row = await prisma.sessionSummary.findFirst({ where: { taskId }, orderBy: { version: 'desc' } });
+    const row = await prisma.sessionSummary
+      .findFirst({ where: { taskId }, orderBy: { version: 'desc' } })
+      .catch((error) => {
+        console.log('[SUMMARY_LOOKUP_FAILED] , ', String(error).slice(0, 160));
+        return null;
+      });
     if (!row) return null;
     return {
       ...(row.summary as unknown as CompactedSummary),

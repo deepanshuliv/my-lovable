@@ -1,5 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 
+export { Prisma } from '@prisma/client';
+
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 export const prisma =
@@ -18,4 +20,6 @@ export type {
   TaskState,
   SessionSummary,
   ToolOutput,
+  CreditAccount,
+  CreditLedger,
 } from '@prisma/client';

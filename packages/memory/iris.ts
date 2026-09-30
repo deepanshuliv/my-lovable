@@ -1,4 +1,4 @@
-import type { LongTermMemory, MemoryMessage, MemoryStore } from './types';
+import type { LongTermMemory, MemoryMessage, MemoryStore, RecentEvent } from './types';
 
 type IrisMessage = { role: string; content: string; created_at?: string };
 
@@ -17,10 +17,17 @@ export class IrisMemory implements MemoryStore {
   private apiKey: string;
   private namespace: string;
 
-  constructor(baseUrl: string, apiKey: string, namespace: string) {
+  private maxEvents: number;
+
+  constructor(baseUrl: string, apiKey: string, namespace: string, maxEvents: number) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.apiKey = apiKey;
     this.namespace = namespace;
+    this.maxEvents = maxEvents;
+  }
+
+  private eventSession(projectId: string): string {
+    return `${projectId}:events`;
   }
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
@@ -42,25 +49,23 @@ export class IrisMemory implements MemoryStore {
     return (await response.json()) as T;
   }
 
+  private async fetchWorkingMemory(sessionId: string): Promise<IrisMessage[]> {
+    const data = await this.request<WorkingMemoryResponse>(
+      `/v1/working-memory/${encodeURIComponent(sessionId)}?namespace=${encodeURIComponent(this.namespace)}`,
+      { method: 'GET' },
+    );
+    return data.messages ?? [];
+  }
+
   private async readWorkingMemory(projectId: string): Promise<IrisMessage[]> {
     try {
-      const data = await this.request<WorkingMemoryResponse>(
-        `/v1/working-memory/${encodeURIComponent(projectId)}?namespace=${encodeURIComponent(this.namespace)}`,
-        { method: 'GET' },
-      );
-      return data.messages ?? [];
+      return await this.fetchWorkingMemory(projectId);
     } catch (error) {
-      // A session that does not exist yet reads as empty, not as a failure.
       console.log('[IRIS_READ] , ', error);
       return [];
     }
   }
 
-  /**
-   * The working-memory endpoint replaces the whole session, so appending is
-   * read-modify-write. Turns are appended one batch per agent turn, not per token, which
-   * keeps that round trip off the hot path.
-   */
   async appendMessages(projectId: string, messages: MemoryMessage[]): Promise<void> {
     if (messages.length === 0) return;
 
@@ -111,7 +116,6 @@ export class IrisMemory implements MemoryStore {
         topics: m.topics,
       }));
     } catch (error) {
-      // Recall is an enhancement. Losing it must not lose the turn.
       console.log('[IRIS_SEARCH] , ', error);
       return [];
     }
@@ -136,5 +140,37 @@ export class IrisMemory implements MemoryStore {
 
   async clearSession(projectId: string): Promise<void> {
     await this.request(`/v1/working-memory/${encodeURIComponent(projectId)}`, { method: 'DELETE' });
+    await this.request(`/v1/working-memory/${encodeURIComponent(this.eventSession(projectId))}`, { method: 'DELETE' });
+  }
+
+  async appendEvents(projectId: string, events: RecentEvent[]): Promise<void> {
+    if (events.length === 0) return;
+
+    const sessionId = this.eventSession(projectId);
+    const existing = await this.fetchWorkingMemory(sessionId).catch(() => [] as IrisMessage[]);
+    const merged = [
+      ...existing,
+      ...events.map((event) => ({
+        role: 'system',
+        content: JSON.stringify(event),
+        created_at: event.createdAt,
+      })),
+    ].slice(-this.maxEvents);
+
+    await this.request(`/v1/working-memory/${encodeURIComponent(sessionId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ session_id: sessionId, namespace: this.namespace, messages: merged }),
+    });
+  }
+
+  async recentEvents(projectId: string, limit: number): Promise<RecentEvent[]> {
+    const messages = await this.fetchWorkingMemory(this.eventSession(projectId));
+    const out: RecentEvent[] = [];
+    for (const message of messages.slice(-limit)) {
+      try {
+        out.push(JSON.parse(message.content) as RecentEvent);
+      } catch {}
+    }
+    return out.sort((a, b) => a.seq - b.seq);
   }
 }

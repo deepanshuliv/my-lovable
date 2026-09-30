@@ -53,10 +53,6 @@ function correlationFromPayload(payload: Record<string, unknown>): EventCorrelat
   return fields;
 }
 
-/**
- * Structured execution-event boundary. Production writes still go through the existing
- * Redis stream/worker path; tests can inject an in-memory sink without changing callers.
- */
 export class EventStore {
   constructor(
     private readonly sink: EventSink,
@@ -98,7 +94,6 @@ export class InMemoryEventStore extends EventStore implements EventReader {
       this.events.push(structuredClone(event));
       return event.seq;
     });
-    // EventStore delegates reads through this instance's methods in the override below.
   }
 
   override async recent(sessionId: string, limit: number): Promise<ExecutionEvent[]> {
@@ -125,7 +120,6 @@ export class InMemoryEventStore extends EventStore implements EventReader {
   }
 }
 
-/** Adapter used by the current SSE emitter and Redis-stream event pipeline. */
 export function createEmitterEventStore(
   emitter: Emitter,
   reader?: EventReader,

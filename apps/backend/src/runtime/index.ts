@@ -8,9 +8,11 @@ import { ContextManager, type ActiveContext } from './contextManager';
 import { createEmitterEventStore, EventStore } from './eventStore';
 import { HistoryRetriever, PrismaEventReader } from './historyRetriever';
 import { PrismaSummaryRepository } from './summary';
-import { PrismaTaskStateRepository, TaskStateManager } from './taskState';
+import { TaskStateManager } from './taskState';
+import { ResilientTaskStateRepository } from './resilientTaskState';
 import { PrismaToolOutputRepository, ToolOutputManager } from './toolOutput';
 import { VerificationManager } from './verificationManager';
+import { loadRecentEvents } from '../utils/recentEvents';
 
 export type AgentRuntimeOptions = {
   projectId: string;
@@ -18,7 +20,6 @@ export type AgentRuntimeOptions = {
   provider: ModelProvider;
 };
 
-/** Composition root for durable long-running execution for one project/session. */
 export class AgentRuntime {
   readonly taskId: string;
   readonly sessionId: string;
@@ -36,9 +37,9 @@ export class AgentRuntime {
     this.taskId = options.projectId;
     this.sessionId = options.projectId;
     this.runId = randomUUIDv7();
-    this.states = new TaskStateManager(new PrismaTaskStateRepository());
+    this.states = new TaskStateManager(new ResilientTaskStateRepository());
     this.summaries = new PrismaSummaryRepository();
-    const reader = new PrismaEventReader();
+    const reader = new PrismaEventReader((sessionId) => loadRecentEvents(sessionId));
     this.events = createEmitterEventStore(options.emitter, reader);
     this.compactor = new CompactionManager(
       this.summaries,
@@ -87,6 +88,15 @@ export class AgentRuntime {
   }
 
   async compactIfUseful(active: ActiveContext): Promise<boolean> {
+    try {
+      return await this.compactNow(active);
+    } catch (error) {
+      console.log('[COMPACTION_SKIPPED] , ', String(error).slice(0, 200));
+      return false;
+    }
+  }
+
+  private async compactNow(active: ActiveContext): Promise<boolean> {
     const minimumEvents = envInt('AGENT_COMPACTION_MIN_EVENTS', 12);
     const threshold = Number(process.env.AGENT_COMPACTION_FRACTION ?? '0.72');
     if (active.budget.utilization < threshold) return false;
@@ -127,8 +137,6 @@ export class AgentRuntime {
       }
       return bounded.text;
     } catch (error) {
-      // A storage outage must not make a tool result disappear. Keep an explicitly marked
-      // bounded observation and leave the original failure visible to diagnostics.
       await this.record('tool_failed', { message: `tool output storage failed: ${String(error).slice(0, 300)}` }).catch(() => {});
       return `${result.slice(0, 8_000)}\n… [tool output shortened because durable output storage failed]`;
     }
@@ -149,3 +157,4 @@ export * from './summary';
 export * from './taskState';
 export * from './toolOutput';
 export * from './verificationManager';
+export * from './resilientTaskState';

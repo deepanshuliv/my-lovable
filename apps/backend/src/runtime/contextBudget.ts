@@ -38,7 +38,6 @@ export class ContextBudgetError extends Error {
 
 const defaultEstimator: TokenEstimator = (text) => Math.ceil(text.length / 4);
 
-/** Provider-independent accounting for the model request invariant. */
 export class ContextBudgetManager {
   readonly capacity: number;
   readonly responseReserve: number;
@@ -100,7 +99,6 @@ export class ContextBudgetManager {
     }
   }
 
-  /** True when another provider request must compact before it is sent. */
   shouldCompact(inputTokens: number, toolDefinitionTokens = 0): boolean {
     return inputTokens + toolDefinitionTokens + this.responseReserve + this.safetyReserve > this.capacity;
   }
@@ -115,7 +113,6 @@ export class ContextBudgetManager {
     });
   }
 
-  /** Deterministic, disclosed trimming used only for optional context. */
   fitOptionalText(text: string, maxTokens: number): string {
     if (maxTokens <= 0) return '';
     if (this.estimate(text) <= maxTokens) return text;
