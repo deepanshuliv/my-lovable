@@ -18,6 +18,10 @@ async function latestSnapshot(projectId: string) {
   });
 }
 
+export async function lastSnapshotSeq(projectId: string): Promise<number> {
+  return (await latestSnapshot(projectId))?.upToSeq ?? 0;
+}
+
 export async function writeSnapshot(
   entry: ProjectSandbox,
   upToSeq: number,
@@ -51,14 +55,16 @@ export async function writeSnapshot(
 export async function restoreSnapshot(entry: ProjectSandbox): Promise<number | null> {
   if (!isStorageConfigured()) return null;
 
-  const snapshot = await latestSnapshot(entry.projectId);
+  const snapshot = await latestSnapshot(entry.projectId).catch((error) => {
+    console.log('[SNAPSHOT_LOOKUP_FAILED] , ', String(error).slice(0, 160));
+    return null;
+  });
   if (!snapshot) return null;
 
   let bytes: Buffer;
   try {
     bytes = await getObject(snapshot.r2Key);
   } catch (error) {
-    
     console.log('[SNAPSHOT_FETCH_FAILED] , ', snapshot.r2Key, String(error).slice(0, 200));
     return null;
   }
@@ -75,7 +81,7 @@ export async function restoreSnapshot(entry: ProjectSandbox): Promise<number | n
     return null;
   }
 
-  const install = await executeCommand(entry.projectId, 'npm install -g pnpm && pnpm install');
+  const install = await executeCommand(entry.projectId, 'npm install --no-audit --no-fund');
   if (install.exitCode !== 0) {
     console.log('[SNAPSHOT_INSTALL_FAILED] , ', install.output.slice(-1000));
   }
@@ -85,4 +91,3 @@ export async function restoreSnapshot(entry: ProjectSandbox): Promise<number | n
   console.log(`[SNAPSHOT] restored ${snapshot.r2Key}, replaying from seq > ${snapshot.upToSeq}`);
   return snapshot.upToSeq;
 }
-

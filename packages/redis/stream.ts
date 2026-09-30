@@ -6,11 +6,16 @@ export async function nextSeq(projectId: string): Promise<number> {
   return await redis.incr(seqKey(projectId));
 }
 
+const RAISE_SEQ = `
+local current = tonumber(redis.call("GET", KEYS[1]) or "0")
+if current < tonumber(ARGV[1]) then
+  redis.call("SET", KEYS[1], ARGV[1])
+end
+return 1
+`;
+
 export async function ensureSeqAtLeast(projectId: string, seq: number) {
-  const current = await redis.get(seqKey(projectId));
-  if (!current || Number.parseInt(current, 10) < seq) {
-    await redis.set(seqKey(projectId), String(seq));
-  }
+  await redis.eval(RAISE_SEQ, { keys: [seqKey(projectId)], arguments: [String(seq)] });
 }
 
 export async function writeEvent(event: ProjectEvent): Promise<string> {
@@ -27,11 +32,11 @@ export async function emitEvent(
   projectId: string,
   type: EventType,
   payload: Record<string, unknown>,
-): Promise<ProjectEvent> {
+): Promise<ProjectEvent & { streamId: string }> {
   const seq = await nextSeq(projectId);
   const event = makeEvent(projectId, seq, type, payload);
-  await writeEvent(event);
-  return event;
+  const streamId = await writeEvent(event);
+  return { ...event, streamId };
 }
 
 export async function ensureConsumerGroup() {

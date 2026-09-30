@@ -157,13 +157,19 @@ async function main() {
 
   await reclaimStale(client);
 
+  let retryOwnPending = true;
+
   while (running) {
     try {
-      const response = await readBatch(client, '>');
+      const response = await readBatch(client, retryOwnPending ? '0' : '>');
       const entries = response?.[0]?.messages ?? [];
 
+      if (retryOwnPending && entries.length === 0) {
+        retryOwnPending = false;
+        continue;
+      }
+
       if (entries.length === 0) {
-        
         await reclaimStale(client);
         continue;
       }
@@ -175,8 +181,9 @@ async function main() {
         console.log(`[WORKER] persisted ${acked.length} events`);
       }
     } catch (error) {
-      console.log('[WORKER_ERROR] , ', error);
-      
+      retryOwnPending = true;
+      console.log('[WORKER_ERROR] , ', String(error).slice(0, 300));
+
       await Bun.sleep(1000);
     }
   }

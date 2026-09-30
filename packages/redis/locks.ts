@@ -1,5 +1,5 @@
 import { redis } from './index';
-import { liveKey, lockKey, ownerKey, previewKey } from './keys';
+import { liveKey, lockKey, ownerKey, previewKey, previewTokenKey, projectUserKey } from './keys';
 
 export const LOCK_TTL_MS = 30_000;
 export const HEARTBEAT_MS = 10_000;
@@ -96,6 +96,14 @@ export async function cachePreviewUrl(projectId: string, url: string) {
   await redis.set(previewKey(projectId), url, { EX: 60 * 60 * 12 });
 }
 
+export async function cachePreviewToken(projectId: string, token: string) {
+  await redis.set(previewTokenKey(projectId), token, { EX: 60 * 60 * 12 });
+}
+
+export async function getPreviewToken(projectId: string): Promise<string | null> {
+  return await redis.get(previewTokenKey(projectId));
+}
+
 export async function getCachedPreviewUrl(projectId: string): Promise<string | null> {
   return await redis.get(previewKey(projectId));
 }
@@ -132,4 +140,18 @@ export function startHeartbeat(
   }, HEARTBEAT_MS);
 
   return () => clearInterval(timer);
+}
+
+const PROJECT_USER_TTL_SECONDS = 60 * 60 * 24 * 30;
+
+export async function cacheProjectUser(projectId: string, userId: string) {
+  await redis.set(projectUserKey(projectId), userId, { EX: PROJECT_USER_TTL_SECONDS });
+}
+
+export async function cachedProjectUser(projectId: string): Promise<string | null> {
+  return await redis.get(projectUserKey(projectId));
+}
+
+export async function forgetProjectUser(projectId: string) {
+  await redis.del(projectUserKey(projectId));
 }

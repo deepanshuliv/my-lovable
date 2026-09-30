@@ -1,13 +1,12 @@
 import type { ProjectSandbox } from './index';
 
-const AUTHOR_NAME = 'my-lovable agent';
-const AUTHOR_EMAIL = 'agent@my-lovable.local';
+const AUTHOR_NAME = 'Inkling';
+const AUTHOR_EMAIL = 'agent@inkling.local';
 
 async function initRepo(entry: ProjectSandbox) {
   try {
     await entry.sandbox.git.init(entry.rootDir);
   } catch (error) {
-    
     console.log('[GIT_INIT] , ', String(error).slice(0, 120));
   }
 
@@ -18,13 +17,13 @@ async function initRepo(entry: ProjectSandbox) {
   }
 }
 
-async function isClean(entry: ProjectSandbox): Promise<boolean> {
+export async function isClean(entry: ProjectSandbox): Promise<boolean> {
   try {
     const status = await entry.sandbox.git.status(entry.rootDir);
     return (status.fileStatus?.length ?? 0) === 0;
   } catch (error) {
     console.log('[GIT_STATUS] , ', String(error).slice(0, 120));
-    
+
     return false;
   }
 }

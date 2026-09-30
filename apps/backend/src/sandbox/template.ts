@@ -93,7 +93,7 @@ export async function provisionTemplate(entry: ProjectSandbox) {
     await uploadBuiltinTemplate(entry);
   }
 
-  const install = await executeCommand(entry.projectId, 'npm install -g pnpm && pnpm install');
+  const install = await executeCommand(entry.projectId, 'npm install --no-audit --no-fund');
   if (install.exitCode !== 0) {
     console.log('[TEMPLATE_INSTALL_FAILED] , ', install.output.slice(-2000));
   }
@@ -124,41 +124,21 @@ async function startDevServer(entry: ProjectSandbox): Promise<boolean> {
   return false;
 }
 
-/**
- * How many bytes the dev server log currently holds.
- *
- * Read at the start of a turn so verification can look at only what that turn appended.
- * Without it the log is cumulative — it is truncated when the dev server starts and the
- * server survives many turns — so an error from the first turn would keep matching on
- * every later one, and verification would report failure forever on turns that were fine.
- *
- * Returns 0 when the file does not exist yet, which reads the whole log. That is the right
- * default: on the first turn there is no earlier noise to exclude.
- */
 export async function devLogOffset(projectId: string): Promise<number> {
   const result = await executeCommand(projectId, `wc -c < ${DEV_LOG_PATH} 2>/dev/null || echo 0`);
   const bytes = Number.parseInt(result.output.trim(), 10);
   return Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
 }
 
-/** Is the dev server still up? Used before showing a preview and after a crash-y turn. */
 async function isDevServerUp(entry: ProjectSandbox): Promise<boolean> {
   return await probeDevServer(entry);
 }
 
-/** Bring the dev server back if a turn killed it — otherwise the iframe goes blank. */
 export async function ensureDevServer(entry: ProjectSandbox): Promise<boolean> {
   if (await isDevServerUp(entry)) return true;
   return await startDevServer(entry);
 }
 
-/**
- * Stop and restart the dev server.
- *
- * Needed when a project's secrets change: Daytona applies new environment variables to
- * newly spawned processes only, so a dev server that was already running keeps the old
- * environment and the user's freshly saved DATABASE_URL is invisible to their app.
- */
 export async function restartDevServer(entry: ProjectSandbox): Promise<boolean> {
   await executeCommand(entry.projectId, `pkill -f "next dev" || true; sleep 1`);
   return await startDevServer(entry);
