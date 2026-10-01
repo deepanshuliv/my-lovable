@@ -272,10 +272,13 @@ export function finalTextMatches(pattern: RegExp, name?: string): Grader {
 export function declaresSecret(pattern: RegExp): Grader {
   return {
     name: `declares a secret matching ${pattern}`,
-    check: (t) =>
-      t.secretsRequired.some((s) => pattern.test(s.key))
-        ? { pass: true }
-        : fail(`declared: ${t.secretsRequired.map((s) => s.key).join(', ') || 'none'}`),
+    check: (t) => {
+      const requested = t.toolCalls
+        .filter((c) => c.name === 'request_api_keys')
+        .flatMap((c) => (Array.isArray(c.args.keys) ? c.args.keys : []).map((k: { key?: string }) => String(k?.key ?? '')));
+      const keys = [...t.secretsRequired.map((s) => s.key), ...requested];
+      return keys.some((key) => pattern.test(key)) ? { pass: true } : fail(`declared: ${keys.join(', ') || 'none'}`);
+    },
   };
 }
 
@@ -418,5 +421,68 @@ export const avoidsDefaultPalette: Grader = {
     const banned = '#(f5f1ea|f7f5f1|fbf8f1|efeae0|ece6db|faf7f1|e8dfcb|f7f4ef|b08947|b6553a|9a2436|9c6e2a|bc7c3a|7d5621|1a1714|1a1814|1b1814)\\b';
     const result = await sandboxExec(t, `grep -rliE ${JSON.stringify(banned)} app components lib 2>/dev/null | head -5`);
     return result.output.trim() ? fail(result.output.trim()) : { pass: true };
+  },
+};
+
+const commandOf = (args: Record<string, any> | undefined) => String(args?.comand ?? args?.command ?? '');
+
+export const firstTypecheckPasses: Grader = {
+  name: 'the first typecheck after writing passes (code was right the first time)',
+  required: false,
+  check: (t) => {
+    let waiting = false;
+    for (const event of t.events) {
+      if (event.type === 'tool_call' && event.name === 'bash_tool' && /typecheck|tsc\b/.test(commandOf(event.args))) waiting = true;
+      else if (waiting && event.type === 'tool_result' && event.name === 'bash_tool') {
+        const output = String(event.result ?? '');
+        return event.isError || /error TS\d+/.test(output) ? fail(output.slice(0, 400)) : { pass: true };
+      }
+    }
+    return fail('the agent never ran a typecheck');
+  },
+};
+
+export function maxFailedVerifications(limit: number, required = false): Grader {
+  return {
+    name: `at most ${limit} failed verification round(s)`,
+    required,
+    check: (t) => {
+      const failed = t.events.filter((e) => e.type === 'verification' && !e.ok).length;
+      return failed <= limit ? { pass: true } : fail(`${failed} failed verification rounds`);
+    },
+  };
+}
+
+export const drawsCredits: Grader = {
+  name: 'the free model still draws down platform credits',
+  check: (t) => (t.costMicros > 0 ? { pass: true } : fail('no credits were charged for this build')),
+};
+
+export const noStrayCd: Grader = noCommandMatches(/^\s*cd\s+(\/workspace|~\/project|\/home\/daytona\/\.)/, 'never cds into a guessed project path');
+
+export const LUCIDE_CHECK_SCRIPT = `
+const fs = require('fs'), path = require('path');
+const dts = fs.readFileSync('node_modules/lucide-react/dist/lucide-react.d.ts', 'utf8');
+const missing = [];
+const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+  if (['node_modules', '.next', '.agents', '.git'].includes(e.name)) continue;
+  const p = path.join(dir, e.name);
+  if (e.isDirectory()) walk(p);
+  else if (/\\.(tsx|ts|jsx|js)$/.test(e.name)) {
+    const src = fs.readFileSync(p, 'utf8');
+    for (const m of src.matchAll(/import\\s*\\{([^{}]*)\\}\\s*from\\s*['"]lucide-react['"]/g))
+      for (const part of m[1].split(',')) { const n = part.trim().split(/\\s+as\\s+/)[0].trim();
+        if (n && !dts.includes('declare const ' + n + ':')) missing.push(p + ':' + n); }
+  } } };
+walk('.');
+console.log(missing.join(' '));`;
+
+export const lucideIconsExist: Grader = {
+  name: 'every imported lucide icon exists in the installed lucide-react',
+  check: async (t) => {
+    const result = await sandboxExec(t, `echo ${Buffer.from(LUCIDE_CHECK_SCRIPT).toString('base64')} | base64 -d > /tmp/lucide-check.js && node /tmp/lucide-check.js`);
+    if (result.exitCode !== 0) return fail(result.output.slice(-300));
+    const missing = result.output.trim();
+    return missing ? fail(`missing icons: ${missing}`) : { pass: true };
   },
 };

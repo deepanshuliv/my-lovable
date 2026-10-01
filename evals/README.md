@@ -22,6 +22,16 @@ The runner starts the real backend and worker with `evals/support/preload.ts`, w
 - Set `AGENT_MAX_TURN_COST_USD` (for example `0.03`) so a single runaway turn cannot exceed its share.
 - `EVAL_JUDGE=1` enables the optional LLM judge, which costs an extra call per judged trial.
 
+## Free platform model
+
+Platform credits run only on `:free` OpenRouter models (always on, default model `poolside/laguna-s-2.1:free`; there is no switch to allow paid models). Every platform request carries `provider.max_price = 0`, so OpenRouter itself refuses a paid endpoint, and a response that reports any cost stops the run. Credits still draw down at a notional rate (`FREE_MODEL_CREDIT_*_PRICE_PER_M`). With free models the runner skips the key-balance checks, but the daily request ledger still applies: OpenRouter allows 20 requests a minute and 1,000 a day.
+
+```bash
+bun run eval --cases free-yoga-booking,free-chat-markers-in-code,free-social-footer-icons,free-two-file-feature --trials 3
+```
+
+Each `free-*` case targets a failure seen with the free model: missing imports and lucide 1.x icon names (the yoga page), tool-call JSON cut off at `</think>`/`<tool_call>`, guessed `cd` paths, and credits that never drew down. Deterministic versions of the provider failures (429s, mid-stream errors, dropped connections, empty replies, text tool calls, truncated arguments, the spend guard) live in `apps/backend/src/providers/freeModel.test.ts` and run in `bun test`.
+
 ## Levels
 
 - **Level 1**: one behaviour per case, one turn: build, edit, repair, clarify (1–5 questions in one call), plan mode, secrets, safety, tools.

@@ -10,7 +10,12 @@ import {
   asksQuestionsBetween,
   completes,
   declaresSecret,
+  drawsCredits,
   fileContains,
+  firstTypecheckPasses,
+  lucideIconsExist,
+  maxFailedVerifications,
+  noStrayCd,
   fileExists,
   finalTextMatches,
   httpExchange,
@@ -90,6 +95,79 @@ export const SPEED_CASES: EvalCase[] = [
   speedWebsite('speed-candle-shop', 'Online shop for my candles', 'The exact brief from production: a two-word shop request ships a polished, animated site near the 85s Lovable median.'),
   speedWebsite('speed-coffee-landing', 'Landing page for a specialty coffee roastery called Northbound', 'A named-brand landing page ships fast with real coffee photos and motion.'),
   speedWebsite('speed-photographer-portfolio', 'Portfolio website for a wedding photographer', 'An image-heavy portfolio ships fast with real photos, motion and a non-default palette.'),
+];
+
+export const FREE_MODEL_CASES: EvalCase[] = [
+  {
+    id: 'free-yoga-booking',
+    level: 2,
+    category: 'website',
+    checks: 'The production failure on the free model: a booking page with motion and icons compiles on the first try, never guesses the project path, and draws credits.',
+    prompt: 'Yoga classes booking page',
+    answers: ['Not now, keep it as it is'],
+    graders: [
+      completes,
+      drawsCredits,
+      typecheckPasses,
+      httpResponds('/', { status: 200 }),
+      lucideIconsExist,
+      noStrayCd,
+      usesMotion,
+      firstTypecheckPasses,
+      maxFailedVerifications(1),
+      maxDurationSeconds(240, false),
+    ],
+  },
+  {
+    id: 'free-chat-markers-in-code',
+    level: 2,
+    category: 'build',
+    checks: 'Laguna truncates tool-call JSON at chat-protocol tags; content containing </think> and <tool_call> must still be written intact.',
+    prompt: `Add a page at /transcript-format that documents our chat transcript format. It must show this example verbatim inside a <pre> block:
+
+<think>plan the reply</think>
+<tool_call>{"name": "search"}</tool_call>
+
+Below it, one sentence explaining each of the two tags. Nothing else.`,
+    answers: SIMPLE_ANSWERS,
+    graders: [
+      ...common(20, 0.05),
+      typecheckPasses,
+      httpResponds('/transcript-format', { status: 200, body: /&lt;\/think&gt;[\s\S]*&lt;tool_call&gt;\{(&quot;|")name(&quot;|"): (&quot;|")search(&quot;|")\}&lt;\/tool_call&gt;/ }),
+    ],
+  },
+  {
+    id: 'free-social-footer-icons',
+    level: 1,
+    category: 'build',
+    checks: 'lucide-react 1.x has no brand logos and renamed CheckCircle; a footer asking for both must still compile and render.',
+    prompt: 'Add a footer to the home page with links to our Instagram, GitHub, LinkedIn and YouTube (use # as the URLs), each shown with its logo icon, and a small "All systems normal" badge with a check-circle icon.',
+    answers: SIMPLE_ANSWERS,
+    graders: [
+      ...common(20, 0.05),
+      typecheckPasses,
+      lucideIconsExist,
+      httpResponds('/', { status: 200, body: /All systems normal/ }),
+      firstTypecheckPasses,
+    ],
+  },
+  {
+    id: 'free-two-file-feature',
+    level: 2,
+    category: 'feature',
+    checks: 'A small full-stack feature on the free model: shared data module, API route and client page with state all import correctly.',
+    prompt: 'Add a /quotes page with a button that shows a random quote. Keep the quotes in lib/quotes.ts, serve one at GET /api/quote as JSON {"text": "...", "author": "..."}, and fetch it from the page when the button is clicked.',
+    answers: SIMPLE_ANSWERS,
+    graders: [
+      ...common(25, 0.06),
+      fileExists('lib/quotes.ts'),
+      typecheckPasses,
+      httpResponds('/quotes', { status: 200 }),
+      httpResponds('/api/quote', { status: 200, body: /"text"\s*:[\s\S]*"author"\s*:/ }),
+      firstTypecheckPasses,
+      noStrayCd,
+    ],
+  },
 ];
 
 export const CASES: EvalCase[] = [
@@ -187,7 +265,7 @@ export const CASES: EvalCase[] = [
       noSuccessfulWrites,
       workingTreeUnchanged,
       finalTextMatches(/[\s\S]{400,}/, 'reply is a substantive plan (400+ chars)'),
-      declaresSecret(/RESEND/i),
+      finalTextMatches(/RESEND_API_KEY|Resend API key/i, 'the plan names the Resend key it will need'),
       llmJudge(
         'PASS only if the reply is an implementation PLAN (steps, files to touch, decisions) and NOT a full implementation. Short illustrative snippets are allowed; complete file contents are not.',
         'plan, not implementation',
@@ -198,15 +276,14 @@ export const CASES: EvalCase[] = [
     id: 'declare-stripe-secret',
     level: 1,
     category: 'secrets',
-    checks: 'Integrations declare their keys with declare_required_secrets and read them from env, never hardcode them.',
+    checks: 'Payments follow the v1 rule: the Stripe key is requested up front with request_api_keys, and without a verified key the page ships as a design-only flow with no hardcoded secret.',
     prompt: 'Add a /pricing page with a "Buy" button that creates a Stripe Checkout session on the server and redirects the user to it.',
     answers: ['One product, a $10 one-time payment.', 'Use Stripe Checkout hosted page, no database.'],
     graders: [
       ...common(30, 0.08),
       declaresSecret(/^STRIPE_.*(SECRET|KEY)/),
-      anyFileMatches('app lib', /process\.env\.STRIPE_[A-Z_]*/, 'code reads the Stripe key from process.env'),
-      noFileMatches('app lib', /sk_(live|test)_[A-Za-z0-9]{8,}/, 'no hardcoded Stripe secret in code'),
-      anyFileMatches('app/api', /export (async )?function POST|export const POST/, 'checkout route is an App Router POST handler'),
+      noFileMatches('app lib components', /sk_(live|test)_[A-Za-z0-9]{8,}/, 'no hardcoded Stripe secret in code'),
+      httpResponds('/pricing', { status: 200, body: /Buy/i }),
       verificationPasses,
     ],
   },
@@ -631,4 +708,5 @@ UI on the home page: list the tasks, a form to add one with a priority select, a
     ],
   },
   ...SPEED_CASES,
+  ...FREE_MODEL_CASES,
 ];

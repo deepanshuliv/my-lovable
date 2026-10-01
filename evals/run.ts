@@ -282,7 +282,10 @@ function summarise(turnEvents: StreamEvent[][], base: Omit<Trial, 'events' | 'fi
     toolResults: toolResultsOf(events),
     turns: turnEvents.map((turn) => ({ events: turn, toolResults: toolResultsOf(turn) })),
     questions: events.filter((e) => e.type === 'question').map((e) => ({ question: String(e.question ?? ''), options: e.options })),
-    secretsRequired: events.filter((e) => e.type === 'secrets_required').flatMap((e) => e.secrets ?? []),
+    secretsRequired: [
+      ...events.filter((e) => e.type === 'secrets_required').flatMap((e) => e.secrets ?? []),
+      ...events.filter((e) => e.type === 'keys_request').flatMap((e) => (e.keys ?? []).map((k: { key: string; reason?: string }) => ({ key: k.key, reason: k.reason ?? '' }))),
+    ],
     verification: verification ? { ok: Boolean(verification.ok), typecheckPassed: verification.typecheckPassed ?? null } : null,
     errors: events.filter((e) => e.type === 'error').map((e) => String(e.message)),
   };
@@ -413,7 +416,7 @@ if (!allFree && priorSpend >= MAX_TOTAL_MICROS) {
   process.exit(1);
 }
 const remaining = await openRouterRemaining();
-if (remaining !== null && remaining < MIN_REMAINING_USD) {
+if (!allFree && remaining !== null && remaining < MIN_REMAINING_USD) {
   console.error(`OpenRouter key has only $${remaining.toFixed(4)} left (< --min-remaining $${MIN_REMAINING_USD}); refusing to run.`);
   process.exit(1);
 }
