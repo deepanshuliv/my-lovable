@@ -5,6 +5,8 @@ const previewHost = process.env.PREVIEW_HOST;
 const nextConfig: NextConfig = {
   devIndicators: false,
 
+  images: { unoptimized: true },
+
   allowedDevOrigins: [
     ...(previewHost ? [previewHost] : []),
 

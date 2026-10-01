@@ -1,21 +1,7 @@
-/**
- * Impeccable Live Variant Mode - Browser Script
- *
- * Injected into the user's page via <script src="http://localhost:PORT/live.js">.
- * The server prepends window.__IMPECCABLE_TOKEN__ and window.__IMPECCABLE_PORT__
- * before this code.
- *
- * UI: a single floating bar that morphs between three states -
- * configure (pick action + go), generating (progressive dots), and cycling
- * (prev/next + accept/discard). Feels like Spotlight, not a modal.
- */
 (function () {
   'use strict';
   if (typeof window === 'undefined') return;
 
-  // Guard against double-init. Bun's HTML loader may process the <script> tag
-  // and create a bundled copy alongside the external load, or HMR may re-execute.
-  // Check BEFORE reading token/port to catch all cases.
   if (window.__IMPECCABLE_LIVE_INIT__) return;
   window.__IMPECCABLE_LIVE_INIT__ = true;
 
@@ -23,40 +9,27 @@
   const PORT = window.__IMPECCABLE_PORT__;
   const APP_ROOT = window.__IMPECCABLE_APP_ROOT__ || null;
   if (!TOKEN || !PORT) {
-    window.__IMPECCABLE_LIVE_INIT__ = false; // reset so the real load can init
+    window.__IMPECCABLE_LIVE_INIT__ = false;
     return;
   }
 
-  //
-  // Design tokens
-  //
-
-  // Brand kinpaku (gold) is pinned to the site's neo-kinpaku tokens
-  // (see site/styles/kinpaku-tokens.css) so Accept / knobs / cycle-dots /
-  // the selection outline / the comment tag all match the site's accent,
-  // not a washed theme-adjusted one. These mirror the kit's picker
-  // colors in site/styles/kinpaku-kit.css; keep them in sync by hand.
   const C = {
-    brand:     'oklch(84% 0.19 80.46)',         // kinpaku gold
-    brandHov:  'oklch(86% 0.07 84)',            // kinpaku-pale (hover lift)
-    brandSoft: 'oklch(84% 0.19 80.46 / 0.18)',  // kinpaku-dim
-    ink:       'oklch(4% 0.004 95)',            // lacquer-deep
-    ash:       'oklch(55% 0.018 82)',           // warm muted text
-    paper:     'oklch(98% 0.005 95 / 0.92)',    // light overlay on user pages
+    brand:     'oklch(84% 0.19 80.46)',
+    brandHov:  'oklch(86% 0.07 84)',
+    brandSoft: 'oklch(84% 0.19 80.46 / 0.18)',
+    ink:       'oklch(4% 0.004 95)',
+    ash:       'oklch(55% 0.018 82)',
+    paper:     'oklch(98% 0.005 95 / 0.92)',
     paperSolid:'oklch(98% 0.005 95)',
-    mist:      'oklch(90% 0.008 82 / 0.6)',     // light hairline
+    mist:      'oklch(90% 0.008 82 / 0.6)',
     white:     'oklch(99% 0 0)',
   };
-  // Picker bar chrome - mirrors .live-demo-gbar / .live-demo-ctx in kinpaku-kit.css.
-  // Quiet neutral elevation: no gold halo ring (gold is reserved for the brand
-  // mark and the active control, not the container outline).
   const PICKER_SHADOW =
     '0 16px 36px -12px oklch(0% 0 0 / 0.6)';
   const FONT = 'system-ui, -apple-system, sans-serif';
   const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
-  // z-index: detect overlays use 99999, so our UI must be above them
   const Z = { highlight: 100001, bar: 100005, picker: 100007, toast: 100010 };
-  const EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'; // ease-out-quint
+  const EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const PREFIX = 'impeccable-live';
   const IMPECCABLE_COMMAND = (window.__IMPECCABLE_COMMAND_PREFIX__ || '/') + 'impeccable';
   const PICK_CURSOR_STYLE_ID = PREFIX + '-pick-cursor-style';
@@ -84,12 +57,6 @@
     'html', 'head', 'body', 'script', 'style', 'link', 'meta', 'noscript', 'br', 'wbr',
   ]);
 
-  // Command vocabulary (values + labels + icons) comes from the canonical source,
-  // skill/scripts/live/vocabulary.mjs, which live-server.mjs serializes into
-  // window.__IMPECCABLE_VOCAB__ when it serves /live.js (same injection path as
-  // the token/port above, so it is always present here). The icons stack above
-  // each chip label and recolor to C.brand when selected (strokes use
-  // currentColor). ACTIONS drives the picker grid; ICONS maps value -> svg.
   const VOCAB = Array.isArray(window.__IMPECCABLE_VOCAB__) ? window.__IMPECCABLE_VOCAB__ : [];
   const ICONS = {};
   const ACTIONS = VOCAB.map((c) => {
@@ -97,14 +64,6 @@
     return { value: c.value, label: c.label };
   });
 
-  // The Live chrome inventory (which surfaces exist, and the element ids each
-  // one owns) comes from the canonical source, skill/scripts/live/ui-surfaces.mjs,
-  // which the /live.js assembler serializes into these globals alongside the
-  // token/port/vocabulary. This file is served raw and injected as a classic
-  // script, so it cannot import that module; the private impeccable-site repo
-  // imports it directly to check its Live UI lab holds a snapshot for every
-  // surface, which only works while the list has exactly one definition.
-  // Add a surface in ui-surfaces.mjs, not here.
   const LIVE_CHROME_MOUNT_CONTRACT = Array.isArray(window.__IMPECCABLE_LIVE_MOUNT_CONTRACT__)
     ? window.__IMPECCABLE_LIVE_MOUNT_CONTRACT__
     : ['root', 'transport', 'state', 'actions'];
@@ -113,34 +72,15 @@
     : [];
   const LIVE_UI_COMPONENT_IDS = [...new Set(LIVE_UI_SURFACES.flatMap((surface) => surface.ids))];
 
-  //
-  // State
-  //
-
   let state = 'IDLE';
   let hoveredElement = null;
   let selectedElement = null;
   let currentSessionId = null;
-  // Advances when the user begins configuring a fresh edit, before that edit
-  // has a server session id. Deferred recovery captures this revision so an
-  // older accept/discard can never reload over a replacement configuration.
   let liveInteractionRevision = 0;
   let expectedVariants = 0;
   let arrivedVariants = 0;
   let visibleVariant = 0;
   let generationPhase = null;
-  // Ascending order of the agent-generation lifecycle. The visible progress bar
-  // must never regress: a `browser_resumed`/behind checkpoint re-broadcasts an
-  // earlier phase (the server regresses the snapshot phase to `generating` on a
-  // behind checkpoint), and without this the bar jumps backward mid-generation.
-  // Unranked phases always pass so we never block a phase we do not model.
-  //
-  // Every `agent_phase` name here is emitted by recordAgentPhase() in
-  // live-server.mjs and listed in AGENT_PHASES in live/vocabulary.mjs, which the
-  // event validator enforces. This file is served raw and injected as an IIFE,
-  // so it cannot import that list; adding a phase means adding it in both.
-  // `queued`, `generating`, `variants_progress`, and `variants_ready` are set
-  // locally by this file and never arrive over the wire.
   const PHASE_RANK = {
     queued: 0,
     picked_up: 1,
@@ -159,27 +99,16 @@
     if (!next || next === current) return false;
     const nextRank = PHASE_RANK[next];
     const currentRank = PHASE_RANK[current];
-    // Only block a known-lower phase from overwriting a known-higher one.
     if (nextRank === undefined || currentRank === undefined) return true;
     return nextRank >= currentRank;
   }
   let parameterGenerationState = 'idle';
   let parameterReadyAnnouncedSession = null;
-  // 'agent' when the generate verb fired this session's Go (the generate
-  // lane declares no knobs, so its bar never shows a pending Tune chip);
-  // null for every Go a user presses.
   let sessionOrigin = null;
-  // The generate lane picks for the agent and never edits copy in the
-  // browser, so its selection carries no edit-copy badge (set on the
-  // agent-target pick, cleared with the session; a user's pick never sets it).
   let editBadgeSuppressed = false;
   let svelteComponentSession = null;
   let svelteRuntimePromise = null;
   let pendingSvelteComponentRetryObserver = null;
-  // The persistent mount-error card. A failed import/mount used to wipe local
-  // session state and flash a 5s toast, which destroyed the only handle the
-  // user had on a session the server still considered live. The card stays up
-  // until the variant mounts, the user retries, or a new cycle starts.
   let mountErrorEl = null;
   let mountErrorState = null;
   let lastReportedMountFailure = null;
@@ -191,13 +120,6 @@
   let pickedAnchorViewportTop = null;
   let pendingVariantAnchorRetryObserver = null;
   let pendingAcceptedSession = null;
-  // Survives cleanupAcceptedSession on purpose: the id of an accept whose
-  // POST was acknowledged (intent durable, epoch fenced) but whose actual
-  // source promotion hasn't reported back yet. Accept is optimistic, so the
-  // teardown nulls pendingAcceptedSession long before live-accept.mjs runs;
-  // this marker is what lets the SSE 'error' branch still recognize a late
-  // accept failure and say the variant was not saved (issue #384). Released
-  // when the real accept result arrives or a new session starts.
   let awaitingAcceptResult = null;
   let variantObserver = null;
   const discardedFrameworkWrapperWatchers = new Map();
@@ -212,9 +134,6 @@
   const browserOwner = sessionState.owner;
   let checkpointTimer = null;
 
-  // Scroll lock - holds window.scrollY at a fixed value while the session is
-  // active, so HMR DOM patches and variant swaps can't drift the page. See
-  // startScrollLock / stopScrollLock below.
   let scrollLockObserver = null;
   let scrollLockTargetY = null;
   let scrollLockAnchorTop = null;
@@ -225,20 +144,10 @@
   const DISCARD_STATE_STYLE_ID = 'impeccable-discard-state';
   const HANDLED_WRAPPER_RELOAD_KEY = PREFIX + '-handled-wrapper-reload';
 
-  // Dedicated key for scroll position - SEPARATE from LS_KEY so that
-  // saveSession's state updates don't clobber a carefully-captured scrollY.
-  // (Previously: saveSession wrote scrollY alongside state, so every call
-  // during resume overwrote the pre-reload value with whatever the browser
-  // had landed on, typically 0.)
   function writeScrollY(y) { sessionState.writeScrollY(y); }
   function readScrollY() { return sessionState.readScrollY(); }
   function clearScrollY() { sessionState.clearScrollY(); }
 
-  // Pre-empt the browser: apply manual scroll restoration and jump to the
-  // saved scrollY at script-parse time. Retries on fonts.ready and load
-  // are essential: scrollTo(y) clamps to the current document.scrollHeight,
-  // which is often hundreds of pixels short of the final value until
-  // async-loaded fonts swap in and reflow.
   try {
     history.scrollRestoration = 'manual';
     const savedY = readScrollY();
@@ -254,7 +163,6 @@
     }
   } catch {}
 
-  // UI refs
   let highlightEl = null;
   let tooltipEl = null;
   let barEl = null;
@@ -265,10 +173,6 @@
   let editBadgeEl = null;
   let editBadgeProxyRoot = null;
   let editBadgeProxyByTarget = new Map();
-
-  //
-  // Helpers
-  //
 
   const domHelpers = window.__IMPECCABLE_LIVE_DOM__?.createLiveBrowserDomHelpers({
     prefix: PREFIX,
@@ -335,10 +239,6 @@
     }),
   };
 
-  //
-  // Highlight overlay
-  //
-
   function initHighlight() {
     highlightEl = document.createElement('div');
     highlightEl.id = PREFIX + '-highlight';
@@ -367,7 +267,6 @@
   }
 
   function shouldShowHighlightTagTooltip() {
-    // Configure/edit carry the tag in the bar selection pill, so keep only the outline.
     return state !== 'CONFIGURING' && state !== 'EDITING';
   }
 
@@ -387,7 +286,6 @@
 
     const hiWasHidden = highlightEl.style.display === 'none' || highlightEl.style.opacity === '0';
     if (hiWasHidden) {
-      // Snap to first target without animating from (0,0), then fade in.
       highlightEl.style.transition = 'none';
       Object.assign(highlightEl.style, { top, left, width, height, display: 'block' });
       void highlightEl.offsetWidth;
@@ -422,30 +320,17 @@
     if (tooltipEl) { tooltipEl.style.opacity = '0'; tooltipEl.style.display = 'none'; }
   }
 
-  //
-  // Annotation overlay (comment pins + kinpaku strokes)
-  //
-  // Active while state === 'CONFIGURING'. The overlay is a fixed-positioned
-  // sibling of <body> mirroring selectedElement's bounding rect. Click (no
-  // drag) drops a comment pin; drag paints a kinpaku SVG stroke. All coords
-  // are stored in element-local CSS px so they survive scroll / resize and
-  // correlate directly with the captured PNG.
-  //
-
-  const DRAG_THRESHOLD = 5;       // px - below this, treat pointerup as a click
-  const PIN_DBL_CLICK_MS = 300;   // two clicks on the same pin within this delete it
+  const DRAG_THRESHOLD = 5;
+  const PIN_DBL_CLICK_MS = 300;
   let annotOverlayEl = null;
   let annotSvgEl = null;
   let annotPinsEl = null;
   let annotClearChipEl = null;
   let annotState = { comments: [], strokes: [] };
   let annotActive = false;
-  // `annotPointer` is either:
-  //   { kind: 'new',   x0, y0, moved, strokeEl, strokePoints }   creating a stroke/pin
-  //   { kind: 'pin',   idx, startPointer, startPin, moved }     dragging an existing pin
   let annotPointer = null;
-  let annotEditing = null;        // { idx, input, wrapEl }
-  let annotLastPinClick = { idx: -1, time: 0 }; // for click-click-to-delete
+  let annotEditing = null;
+  let annotLastPinClick = { idx: -1, time: 0 };
   let placeholderResizeLayerEl = null;
   let placeholderResizeDrag = null;
 
@@ -464,8 +349,6 @@
     Object.assign(annotSvgEl.style, {
       position: 'absolute', top: '0', left: '0',
       width: '100%', height: '100%',
-      // The SVG itself doesn't absorb clicks; individual hit-paths opt-in via
-      // pointer-events=stroke so gaps still fall through to the overlay.
       pointerEvents: 'none', overflow: 'visible',
     });
     annotOverlayEl.appendChild(annotSvgEl);
@@ -510,10 +393,6 @@
     annotOverlayEl.addEventListener('pointerup', onAnnotUp);
     annotOverlayEl.addEventListener('pointercancel', onAnnotUp);
     uiAppend(annotOverlayEl);
-    // Modal-host friendliness: pointer-events is already 'auto' on this
-    // overlay; we only need to silence the host's outside-interaction
-    // listeners. Don't override pointer-events here (the overlay toggles
-    // visibility via display:none, which is fine).
     defangOutsideHandlers(annotOverlayEl, { setPointerEvents: false });
   }
 
@@ -536,8 +415,6 @@
     placeholderResizeDrag = null;
     if (annotOverlayEl) annotOverlayEl.style.display = 'none';
     syncPlaceholderResizeHandles();
-    // Drop any in-progress edit without touching annotState - clearAnnotations
-    // (if the caller is exiting configure mode) handles state reset.
     annotEditing = null;
   }
 
@@ -563,8 +440,6 @@
     updateClearChip();
   }
 
-  // Rebuild the SVG layer. Each stroke gets a wider invisible hit path
-  // beneath the visible kinpaku path so clicks register on thin lines.
   function redrawStrokes() {
     while (annotSvgEl.firstChild) annotSvgEl.removeChild(annotSvgEl.firstChild);
     annotState.strokes.forEach((s, idx) => {
@@ -601,14 +476,12 @@
   function onAnnotDown(e) {
     if (!annotActive) return;
 
-    // 0) Insert placeholder edge resize - wins over draw / pins.
     const resizeEdge = e.target.closest?.('[data-impeccable-placeholder-resize]')?.dataset.impeccablePlaceholderResize;
     if (resizeEdge && configureKind === 'insert' && placeholderElement) {
       startPlaceholderEdgeResize(resizeEdge, e);
       return;
     }
 
-    // 1) Clear chip → wipe all annotations
     if (e.target.closest?.('[data-annot-clear]')) {
       if (annotEditing) annotEditing = null;
       clearAnnotations();
@@ -618,7 +491,6 @@
       return;
     }
 
-    // 2) Stroke hit path → delete that stroke
     const strokeHit = e.target.closest?.('[data-annot-stroke]');
     if (strokeHit) {
       const idx = parseInt(strokeHit.dataset.annotStroke, 10);
@@ -630,12 +502,10 @@
       return;
     }
 
-    // 3) Pin → drag, edit, or delete-on-double-click
     const pinWrap = e.target.closest?.('[data-annot-pin]');
     if (pinWrap) {
       const idx = parseInt(pinWrap.dataset.annotPin, 10);
       if (!Number.isInteger(idx)) return;
-      // Double-click (two pointerdowns on the same pin within window) → delete.
       const now = Date.now();
       if (annotLastPinClick.idx === idx && now - annotLastPinClick.time < PIN_DBL_CLICK_MS) {
         if (annotEditing && annotEditing.idx === idx) annotEditing = null;
@@ -646,10 +516,7 @@
         return;
       }
       annotLastPinClick = { idx, time: now };
-      // If editing a different pin, commit that edit before starting here.
       if (annotEditing && annotEditing.idx !== idx) finalizeEditingPin();
-      // If already editing THIS pin and the user clicked the dot, let the
-      // input keep focus (don't start a drag - the click wasn't meant as one).
       if (annotEditing && annotEditing.idx === idx) return;
       const p = localCoords(e);
       const pin = annotState.comments[idx];
@@ -664,7 +531,6 @@
       return;
     }
 
-    // 4) Empty area → commit any open edit, then start new annotation
     if (annotEditing) {
       finalizeEditingPin();
       e.stopPropagation(); e.preventDefault();
@@ -712,7 +578,6 @@
       return;
     }
 
-    // kind === 'new'
     const dx = p.x - annotPointer.x0, dy = p.y - annotPointer.y0;
     if (!annotPointer.moved) {
       if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
@@ -757,8 +622,6 @@
       try { annotOverlayEl.releasePointerCapture(e.pointerId); } catch {}
       annotPointer = null;
       if (wasDrag) {
-        // A drag is an intentional reposition; a follow-up click shouldn't be
-        // interpreted as a double-click-to-delete.
         annotLastPinClick = { idx: -1, time: 0 };
       } else {
         beginEditPin(idx);
@@ -767,11 +630,9 @@
       return;
     }
 
-    // kind === 'new'
     const wasDrag = annotPointer.moved;
     if (wasDrag) {
       annotState.strokes.push({ points: annotPointer.strokePoints });
-      // Swap the temporary preview SVG path for the full render with hit paths.
       redrawStrokes();
     } else {
       const idx = annotState.comments.length;
@@ -833,7 +694,6 @@
   function beginEditPin(idx) {
     const wrapEl = annotPinsEl.querySelector('[data-annot-pin="' + idx + '"]');
     if (!wrapEl) return;
-    // Strip any existing bubble (but keep the dot)
     wrapEl.querySelectorAll('div:not(:first-child)').forEach(n => n.remove());
     const input = document.createElement('input');
     input.type = 'text';
@@ -852,11 +712,8 @@
     annotEditing = { idx, input, wrapEl, originalText };
     input.addEventListener('keydown', onAnnotInputKey, true);
     input.addEventListener('blur', () => {
-      // Fires on both focus-loss and programmatic blur; commit unless we
-      // already handled it.
       if (annotEditing && annotEditing.input === input) finalizeEditingPin();
     });
-    // Stop clicks/pointerdowns inside the input from bubbling to the overlay
     ['pointerdown', 'click'].forEach(ev => {
       input.addEventListener(ev, e => e.stopPropagation());
     });
@@ -871,7 +728,6 @@
       e.preventDefault(); e.stopPropagation();
       cancelEditingPin();
     } else {
-      // Keep arrows / backspace from hitting global handlers
       e.stopPropagation();
     }
   }
@@ -890,8 +746,6 @@
     if (!annotEditing) return;
     const { idx, originalText } = annotEditing;
     annotEditing = null;
-    // If the pin had text before this edit, restore it. If it was a
-    // just-created empty pin, Escape removes it.
     if (originalText) {
       annotState.comments[idx].text = originalText;
     } else {
@@ -900,10 +754,6 @@
     renderAllPins();
   }
 
-  // Build a detached annotation subtree suitable for injection into the clone
-  // modern-screenshot creates. Coordinates are element-local so this slots
-  // straight into an element that's been made position:relative. Takes an
-  // explicit snapshot so it works after annotState has been cleared.
   function buildAnnotationsForCapture(rect, snapshot) {
     const comments = snapshot ? snapshot.comments : annotState.comments;
     const strokes = snapshot ? snapshot.strokes : annotState.strokes;
@@ -934,15 +784,10 @@
       wrap.appendChild(svg);
     }
     for (const c of comments) {
-      // idx=-1 means non-interactive; pointerEvents stay off in the clone
       wrap.appendChild(buildPinElement(c, -1));
     }
     return wrap;
   }
-
-  //
-  // Element context extraction
-  //
 
   function stripManualEditRuntimeState(root) {
     if (!root || root.nodeType !== 1) return;
@@ -989,11 +834,8 @@
             }
           }
         }
-      } catch { /* cross-origin */ }
+      } catch {}
     }
-    // The selector a mechanical bake would anchor lasting rules on, and how
-    // many elements it matches right now: the bake refuses anything but one,
-    // since its rules would restyle every match, not just this element.
     const cssIdent = (s) => /^[A-Za-z_-][\w-]*$/.test(s);
     const anchorClasses = [...el.classList].filter(cssIdent);
     const anchor = el.id && cssIdent(el.id)
@@ -1094,19 +936,8 @@
     return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
-  //
-  // The Bar - one floating element, three modes
-  //
-
-  // Contextual-bar palette. Cached at init so every build*Row reads a
-  // consistent set of colors; detectPageTheme runs once rather than on every
-  // phase transition.
   let BP = null;
 
-  // Bar shadow variants. The default projects down + subtle around. When
-  // the Tune popover opens below the bar, a downward shadow lands on the
-  // dark popover and reads as a bright ghost line. We swap to UP-only while
-  // tune is open below so the popover's top edge is clean.
   const BAR_SHADOW_DEFAULT = '0 4px 20px oklch(0% 0 0 / 0.08), 0 1px 3px oklch(0% 0 0 / 0.06)';
   const BAR_SHADOW_UP = '0 -4px 20px oklch(0% 0 0 / 0.08), 0 -1px 3px oklch(0% 0 0 / 0.06)';
   const BAR_SHADOW_DOWN = BAR_SHADOW_DEFAULT;
@@ -1137,12 +968,9 @@
     if (!barEl) return;
     const barH = barEl.offsetHeight || 44;
     const barW = barEl.offsetWidth || 380;
-    const GLOBAL_BAR_RESERVE = 64; // global bar height + bottom margin + breathing room
+    const GLOBAL_BAR_RESERVE = 64;
     const GAP = 8;
 
-    // Recovery pins to document.body when the picked element is off-screen or
-    // missing. Center the generating bar above the global bar instead of
-    // stacking a duplicate toast in the same slot.
     if (recoveryWaitingForAnchor) {
       const barRect = globalBarEl?.getBoundingClientRect();
       const reserve = barRect && barRect.height > 0
@@ -1158,9 +986,6 @@
     if (!anchor) return;
     const r = anchor.getBoundingClientRect();
 
-    // Prefer below the element; fall back to above; if neither fits (element
-    // taller than viewport), pin to a stable viewport anchor so the bar
-    // doesn't teleport between top and bottom as the user scrolls.
     let top;
     const belowTop = r.bottom + GAP;
     const aboveTop = r.top - barH - GAP;
@@ -1240,10 +1065,7 @@
     syncPageChatFocus('update-bar-content');
   }
 
-  // Configure row: the floating bar surface IS the input; modifier pills sit left of the field.
-
   const CONFIGURE_BAR_H = '36px';
-  // Compact selection pill + 7px inset balances vertical centering in the 36px bar.
   const CONFIGURE_BAR_INSET = '7px';
   const CONFIGURE_PILL_RADIUS = '7px';
   const CONFIGURE_SELECTION_PILL_BORDER = '1px solid oklch(70% 0.12 188)';
@@ -1690,8 +1512,6 @@
     return btn;
   }
 
-  // Insert mode helpers (mirrors skill/scripts/live/insert-ui.mjs)
-
   function detectInsertAxisFromStyle(style) {
     const display = style?.display || 'block';
     if (display.includes('flex')) {
@@ -2007,17 +1827,6 @@
     syncPageInteractionCursor();
   }
 
-  /**
-   * Drive the page-level pick / insert cursor through the textContent of one
-   * injected <style>, never by mutating <html> (className or inline style).
-   * Frameworks that server-render the <html>/<body> roots (Next.js App Router)
-   * report a React 19 hydration mismatch when the client adds an attribute the
-   * server HTML never emitted, so a `class`/inline `style` toggled on
-   * `document.documentElement` trips "a tree hydrated but some attributes ...
-   * didn't match" on the next Fast-Refresh re-render. Keying the cursor off a
-   * stable-id <style> keeps the effect off the hydrated host elements (same
-   * shape as the scroll-anchor lock). A falsy cursor clears the rule.
-   */
   function setPageInteractionCursor(cursor) {
     let style = document.getElementById(PICK_CURSOR_STYLE_ID);
     if (!cursor) {
@@ -2027,8 +1836,6 @@
     if (!style) {
       style = document.createElement('style');
       style.id = PICK_CURSOR_STYLE_ID;
-      // Styles the host page, not the chrome - inside the adapter's shadow UI
-      // root (uiAppendStyle's target) these selectors would match nothing.
       (document.head || document.documentElement).appendChild(style);
     }
     style.textContent =
@@ -2037,7 +1844,6 @@
       + '[id^="' + PREFIX + '"] * { cursor: revert !important; }';
   }
 
-  /** Page-level cursor while pick or insert mode is targeting page elements. */
   function syncPageInteractionCursor() {
     let cursor = '';
     if (state === 'PICKING' && pickActive && !insertActive) {
@@ -2048,18 +1854,11 @@
     setPageInteractionCursor(cursor);
   }
 
-  /**
-   * Single entry point for interaction-state transitions. The pick-mode
-   * crosshair is derived from `state`, so a bare `state = ...` assignment
-   * leaves the page cursor out of sync with the mode it advertises.
-   */
   function setLiveState(next) {
     state = next;
     window.__IMPECCABLE_LIVE_STATE__ = next;
     retryDeclinedAgentTargets();
     syncPageInteractionCursor();
-    // Whether a queued steer is still behind a generation is a function of this
-    // state, so the hint has to move with it, not only with the 5s poll.
     syncSteerQueueHint();
   }
 
@@ -2073,7 +1872,6 @@
       || !!(currentSessionId && currentSessionId !== sessionId);
   }
 
-  /** Element used to position the floating bar / shader during a session. */
   function resolveBarAnchor() {
     if (svelteComponentSession?.sessionId === currentSessionId && (state === 'GENERATING' || state === 'CYCLING')) {
       const anchor = resolveSvelteComponentAnchor();
@@ -2155,7 +1953,6 @@
     return !!wrapper && wrapper.dataset.impeccableMode === 'insert';
   }
 
-  /** Recreate the dotted placeholder if Astro/Vite HMR removed it mid-generation. */
   function ensureInsertPlaceholder() {
     if (!isInsertGeneratingSession()) return placeholderElement;
     const wrapper = findVariantsWrapper(currentSessionId);
@@ -2391,7 +2188,6 @@
     }
   }
 
-  /** Stylesheet shared by the replace and insert configure rows. */
   function ensureConfigureInputStyle() {
     if (uiGetById(PREFIX + '-configure-input-style')) return;
     const s = document.createElement('style');
@@ -2596,15 +2392,12 @@
     return row;
   }
 
-  // Generating row
-
   function buildGeneratingRow() {
     const row = el('div', {
       display: 'flex', alignItems: 'center', gap: '8px',
       padding: '2px 4px',
     });
 
-    // Action label
     const label = el('span', {
       fontWeight: '600', fontSize: '12px', color: BP.text,
       flexShrink: '0', whiteSpace: 'nowrap',
@@ -2612,10 +2405,8 @@
     label.textContent = configureKind === 'insert' ? 'Insert' : actionLabel();
     row.appendChild(label);
 
-    // Dots
     row.appendChild(buildDots(false));
 
-    // Status
     const status = el('span', {
       fontSize: '11px', color: BP.textDim, whiteSpace: 'nowrap',
       marginLeft: 'auto',
@@ -2639,29 +2430,14 @@
     return 'Generating ' + expectedVariants + ' variants...';
   }
 
-  // Cycling row
-
   const TUNE_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="flex-shrink:0"><line x1="4" y1="8" x2="20" y2="8"/><circle cx="14" cy="8" r="2.4" fill="currentColor" stroke="none"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="10" cy="16" r="2.4" fill="currentColor" stroke="none"/></svg>';
 
-  /**
-   * Which variant the user is actually looking at. For component previews the
-   * mounted component is the truth; `visibleVariant` is the intent, and the two
-   * differ while a mount is in flight.
-   */
   function cyclingShownVariant() {
     return svelteComponentSession?.sessionId === currentSessionId && svelteComponentSession.mountedVariant > 0
       ? svelteComponentSession.mountedVariant
       : visibleVariant;
   }
 
-  /**
-   * The single counter string. It is built here rather than at each call site
-   * because the row builder and the incremental sync used to disagree on the
-   * denominator: one showed the planned count, the other the arrived count, so
-   * "2/3" turned into "2/2" on the next sync without anything changing on
-   * screen. Arrived wins once anything has arrived; expected covers the window
-   * before the first variant lands.
-   */
   function cyclingCounterText() {
     const total = arrivedVariants > 0 ? arrivedVariants : expectedVariants;
     return cyclingShownVariant() + '/' + total;
@@ -2676,17 +2452,14 @@
       padding: '1px 2px',
     });
 
-    // Prev
     const prev = navBtn('\u2190');
     prev.id = PREFIX + '-variant-prev';
     prev.addEventListener('click', (e) => { e.stopPropagation(); cycleVariant(-1); });
     if (cyclingShownVariant() <= 1) prev.style.opacity = '0.3';
     row.appendChild(prev);
 
-    // Dots (clickable)
     row.appendChild(buildDots(true));
 
-    // Counter
     const counter = el('span', {
       fontFamily: MONO, fontSize: '11px', fontWeight: '500',
       color: BP.textDim, minWidth: '24px', textAlign: 'center',
@@ -2695,15 +2468,12 @@
     counter.textContent = cyclingCounterText();
     row.appendChild(counter);
 
-    // Next
     const next = navBtn('\u2192');
     next.id = PREFIX + '-variant-next';
     next.addEventListener('click', (e) => { e.stopPropagation(); cycleVariant(1); });
     if (cyclingShownVariant() >= arrivedVariants) next.style.opacity = '0.3';
     row.appendChild(next);
 
-    // Tune chip stays visible while the deferred parameter phase is running,
-    // then becomes interactive as soon as this variant exposes controls.
     const visParams = parseVariantParams(getVisibleVariantEl());
     const hasParams = visParams.length > 0;
     const paramsPending = !hasParams && (parameterGenerationState === 'pending' || parameterGenerationState === 'loading');
@@ -2767,7 +2537,6 @@
       row.appendChild(tune);
     }
 
-    // Spacer
     row.appendChild(el('div', { flex: '1' }));
 
     if (arrivedVariants < expectedVariants) {
@@ -2779,7 +2548,6 @@
       row.appendChild(progress);
     }
 
-    // Accept - primary action, kinpaku gold + lacquer-deep (matches demo .live-demo-ctx-accept)
     const accept = el('button', {
       padding: '5px 14px', borderRadius: '5px',
       border: 'none', background: C.brand, color: C.ink,
@@ -2800,7 +2568,6 @@
     }
     row.appendChild(accept);
 
-    // Discard
     const discard = el('button', {
       padding: '4px 6px', borderRadius: '5px',
       border: '1px solid ' + BP.hairline, background: 'transparent',
@@ -2816,10 +2583,6 @@
 
     return row;
   }
-
-  // Shared UI builders
-
-  // Saving row (waiting for agent to process accept/discard)
 
   function buildSavingRow() {
     const row = el('div', {
@@ -2844,8 +2607,6 @@
     return row;
   }
 
-  // Confirmed row (green success, auto-dismisses)
-
   function buildConfirmedRow() {
     const row = el('div', {
       display: 'flex', alignItems: 'center', gap: '8px',
@@ -2865,8 +2626,6 @@
     return row;
   }
 
-  // Shared UI builders
-
   function buildDots(clickable) {
     const container = el('div', {
       display: 'flex', alignItems: 'center', gap: '4px',
@@ -2874,11 +2633,6 @@
     for (let i = 1; i <= expectedVariants; i++) {
       const arrived = i <= arrivedVariants;
       const active = i === visibleVariant;
-      // active: solid site-brand kinpaku dot. arrived+inactive: muted neutral.
-      // pending (not yet arrived): faint outline ring. No borders on arrived
-      // dots - the previous "accent ring + ash fill" combo read as noisy
-      // kinpaku chips, especially when all variants had arrived and every
-      // dot wore an accent ring.
       const dotBg = active ? C.brand
         : arrived ? BP.textDim
         : 'transparent';
@@ -2934,10 +2688,6 @@
     return e;
   }
 
-  //
-  // Action picker popover
-  //
-
   function initActionPicker() {
     const P = barPaletteForTheme(detectPageTheme());
     pickerEl = document.createElement('div');
@@ -2956,7 +2706,6 @@
       fontFamily: FONT,
     });
 
-    // Build the chip grid
     const grid = el('div', {
       display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '3px',
     });
@@ -3007,24 +2756,20 @@
     uiAppend(pickerEl);
     defangOutsideHandlers(pickerEl);
 
-    // Cache the palette on the picker so toggleActionPicker's state refresh
-    // uses the same theme-aware colors when it repaints chips.
     pickerEl.__iceq_palette = P;
   }
 
   function toggleActionPicker() {
     if (pendingApplyInFlight) { showManualApplyBusyToast(); return; }
     if (pickerEl.style.display !== 'none') { hideActionPicker(); return; }
-    // Rebuild chips to reflect current selection
     const P = pickerEl.__iceq_palette || barPaletteForTheme(detectPageTheme());
     pickerEl.querySelectorAll('button').forEach(chip => {
       const isActive = chip.dataset.action === selectedAction;
       chip.style.background = isActive ? P.accentSoft : 'transparent';
       chip.style.color = isActive ? P.accent : P.text;
     });
-    // Position above the bar, right-aligned to the configure bar edge.
     const barRect = barEl.getBoundingClientRect();
-    const pickerH = 170; // approximate; grows with icon + label rows
+    const pickerH = 170;
     let top = barRect.top - pickerH - 6;
     if (top < 8) top = barRect.bottom + 6;
     pickerEl.style.display = 'block';
@@ -3074,49 +2819,18 @@
     }
   }
 
-  //
-  // Params panel (per-variant coarse controls)
-  //
-  // Variants may declare a parameter manifest via a JSON attribute on the
-  // variant wrapper:
-  //
-  //   <div data-impeccable-variant="1"
-  //        data-impeccable-params='[{"id":"density","kind":"steps",...}]'>
-  //
-  // The panel docks to the right edge of the outline during CYCLING and
-  // exposes 2-5 coarse knobs. Values apply to the variant wrapper so scoped
-  // CSS can respond instantly without regeneration:
-  //
-  //   range  / numeric toggle  -> CSS custom property used by variant styles
-  //   steps  / boolean toggle  → data-p-<id> attribute  used via :scope[data-p-foo="..."]
-  //
-  // On variant switch, values reset to that variant's declared defaults.
-  // On accept, current values are sent in the event payload so the agent
-  // can bake them into the source-file write.
-  //
+  let paramsPanelEl = null;
+  let paramsPanelInner = null;
+  let paramsPanelBody = null;
+  let paramsCurrentValues = {};
+  let tuneOpen = false;
 
-  let paramsPanelEl = null;     // outer wrapper (overflow:hidden, clips the slide)
-  let paramsPanelInner = null;  // translating content (carries bg, padding, knobs)
-  let paramsPanelBody = null;   // grid holding the knob cells
-  let paramsCurrentValues = {}; // {paramId: value} - mirror of the visible variant's live values
-  let tuneOpen = false;         // whether the Tune popover is open right now
-
-  // Theme-aware Tune popover. Appears as a drawer that slides out from the
-  // contextual bar's bar-facing edge (below if the bar sits below the
-  // element, above otherwise). Same width as the bar. Auto-wraps to extra
-  // rows when the knobs exceed one row. The bar's border-radius on the
-  // popover side goes flat while open so the two shapes read as one.
   let paramsPanelPalette = null;
 
   function initParamsPanel() {
     paramsPanelPalette = barPaletteForTheme(detectPageTheme());
     const P = paramsPanelPalette;
 
-    // Single element, always in the DOM. The slide animation is a CSS mask
-    // with mask-size growing from 0% to 100% along the bar-facing axis - no
-    // display toggle, no opacity toggle, no transform trickery. The mask
-    // hides everything initially; as it grows, content is revealed from
-    // the bar edge outward.
     paramsPanelEl = document.createElement('div');
     paramsPanelEl.id = PREFIX + '-params-panel';
     Object.assign(paramsPanelEl.style, {
@@ -3129,15 +2843,9 @@
       borderRadius: '0 0 10px 10px',
       pointerEvents: 'none',
 
-      // clip-path is the same conceptual reveal as mask but with rock-solid
-      // transition support across engines. Closed state clips from the far
-      // edge; open = inset(0) shows everything.
       clipPath: 'inset(0 0 100% 0)',
       transition: 'clip-path 0.44s ' + EASE,
 
-      // Park off-screen until positionParamsPanel places it. These are NOT
-      // in the transition list, so they snap instantly - no fly-in from the
-      // top-left when first shown.
       top: '-9999px', left: '-9999px', width: '0',
     });
 
@@ -3149,13 +2857,9 @@
 
     paramsPanelEl.appendChild(paramsPanelBody);
     uiAppend(paramsPanelEl);
-    // Don't override pointer-events: the panel toggles between 'none' (closed,
-    // click-through) and 'auto' (open) on its own. Just silence the host's
-    // outside-interaction listeners while the panel is open.
     defangOutsideHandlers(paramsPanelEl, { setPointerEvents: false });
-    paramsPanelInner = paramsPanelEl; // compatibility alias for the rest of the code
+    paramsPanelInner = paramsPanelEl;
   }
-
 
   function getMountedSvelteComponentAnchor(session = svelteComponentSession) {
     const el = session?.mountTargetEl?.firstElementChild || null;
@@ -3182,10 +2886,6 @@
   }
 
   function parseVariantParams(variantEl) {
-    // Svelte component variants can't carry a `data-impeccable-params` attribute:
-    // the compiler reads `{` inside attribute values as expression delimiters, so
-    // JSON-with-braces breaks the build. For that path the params live in a sidecar
-    // params.json keyed by variant number, loaded into the session at mount time.
     if (svelteComponentSession?.sessionId === currentSessionId) {
       const byVariant = svelteComponentSession.paramsByVariant || {};
       const params = byVariant[String(visibleVariant)] || byVariant[visibleVariant];
@@ -3213,18 +2913,11 @@
     } else if (param.kind === 'steps') {
       variantEl.setAttribute(attr, String(value));
     }
-    // Svelte component variants are client-mounted into
-    // [data-impeccable-component-mount] with no [data-impeccable-variant="N"]
-    // wrapper for the state stylesheet to target, and the element is not SSR'd,
-    // so there is no React hydration to mismatch. Drive range/toggle --p-* inline
-    // on the mounted element so scoped preview CSS resolves them.
     if (svelteComponentSession?.sessionId === currentSessionId) {
       if (param.kind === 'range') variantEl.style.setProperty('--p-' + param.id, String(value));
       else if (param.kind === 'toggle') variantEl.style.setProperty('--p-' + param.id, value ? '1' : '0');
       return;
     }
-    // range/toggle --p-* custom properties are driven through the injected
-    // variant-state stylesheet so we never mutate inline style on SSR'd divs.
     updateVariantStateStylesheet(currentSessionId, visibleVariant);
   }
 
@@ -3362,20 +3055,9 @@
     }
   }
 
-  //
-  // Inline text editing - makes pure-text descendants of the picked element
-  // directly contenteditable. Save stages copy edits in the live buffer; the
-  // Apply copy edits dock later asks the AI to apply the staged batch.
-  //
-
   let inlineEditRows = [];
   let inlineEditDrafts = new Map();
 
-  // Mixed-content elements (e.g. <p>text<code>x</code>text</p>) skip the row
-  // walker's "all-children-are-text-nodes" rule. Wrap each non-whitespace direct
-  // text-node child in a marker span so the walker emits a row for it. The
-  // wrappers are inline display by default and inherit styles, so the page
-  // shouldn't visually shift. We unwrap in disableInlineEdit.
   const MIXED_WRAP_SKIP = { script: 1, style: 1, template: 1, noscript: 1, svg: 1, code: 1, pre: 1 };
 
   function collectEditableTextRows(rootEl, opts) {
@@ -3504,10 +3186,6 @@
 
   function hasTextRows(el) {
     if (!el) return false;
-    // Lightweight: any descendant outside SKIP_SUBTREE_TAGS with at least one
-    // non-whitespace direct text-node child means we have something editable
-    // (mixed-content paragraphs included). Mirrors what the wrap+walk path
-    // will produce in enableInlineEdit.
     function check(node) {
       if (!node || node.nodeType !== 1) return false;
       const tag = node.tagName.toLowerCase();
@@ -3531,7 +3209,6 @@
     hideAnnotOverlay();
     renderEditBadge('editing');
     enableInlineEdit(selectedElement);
-    // Focus first editable element and position cursor at end
     if (inlineEditRows.length > 0) {
       const firstEditable = inlineEditRows[0] && inlineEditRows[0].el;
       setTimeout(() => {
@@ -3581,8 +3258,6 @@
 
   function teardownConfigureChrome() {
     hideConfigureBarTooltip();
-    // hideBar() restores unsaved EDITING drafts before it disables inline
-    // edit; disabling here first would wipe the draft metadata it needs.
     hideBar();
     stopScrollTracking();
     hideAnnotOverlay();
@@ -3600,9 +3275,6 @@
     syncPageChatFocus(reason);
   }
 
-  // Prefer the leaf's own id/class; if it has neither (e.g. a bare <em>),
-  // climb to the nearest ancestor with one. The CLI uses tag+class together,
-  // so tag must come from the same node as the locator.
   function buildLocatorForLeaf(leafEl, fallbackEl) {
     if (leafEl && (leafEl.id || leafEl.classList.length > 0)) {
       return {
@@ -3802,9 +3474,6 @@
     const container = copyEditContainerContext(contextElement);
     if (container) for (const op of ops) op.container = container;
     try {
-      // Token in the query string as well as the body: the URL token is what
-      // authorizes the CORS preflight when the page runs on a non-loopback
-      // dev host (ddev, Valet), since the preflight carries no request body.
       const res = await fetch('http://localhost:' + PORT + '/manual-edit-stash?token=' + encodeURIComponent(TOKEN), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3925,7 +3594,6 @@
         expiresAt: Date.now() + MANUAL_APPLY_STATE_TTL_MS,
       }));
     } catch {
-      // Best-effort only. The in-memory flag still covers non-reload flows.
     }
   }
 
@@ -3949,7 +3617,6 @@
     try {
       sessionStorage.removeItem(manualApplyStateKey());
     } catch {
-      // Ignore storage failures; UI state can still clear in memory.
     }
   }
 
@@ -4336,10 +4003,6 @@
         showManualApplyDecision(msg);
         return;
       }
-      // Clear the in-flight flag BEFORE updating the counter. updatePendingCounter
-      // re-asserts setPendingApplyLoading(true) whenever the flag is still set and
-      // edits remain (failed entries stay staged), which would otherwise leave the
-      // picker frozen forever after a partial/failed apply.
       const wasApplying = pendingApplyInFlight;
       setPendingApplyLoading(false);
       const remainingCount = remainingManualEditCount(msg);
@@ -4501,10 +4164,6 @@
     if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value));
     return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
   }
-
-  //
-  // Edit content badge - floating button at element top-right to enter EDITING mode
-  //
 
   const EDIT_COPY_LABEL = 'Edit copy';
   const EDIT_COPY_ICON =
@@ -4680,7 +4339,6 @@
     uiAppend(editBadgeEl);
     initEditBadgeHitProxies();
 
-    // Remove focus rings on edit badge buttons + contenteditable elements
     if (!uiGetById(PREFIX + '-edit-badge-focus-style')) {
       const s = document.createElement('style');
       s.id = PREFIX + '-edit-badge-focus-style';
@@ -4702,7 +4360,6 @@
     }
     const r = selectedElement.getBoundingClientRect();
     const bw = editBadgeEl.offsetWidth;
-    // Match showHighlight's 2px outset so the badge right edge lines up with the outline.
     const outlineRight = r.right + 2;
     editBadgeEl.style.top = Math.max(4, r.top - 28) + 'px';
     editBadgeEl.style.left = Math.min(window.innerWidth - bw - 4, outlineRight - bw) + 'px';
@@ -4784,7 +4441,6 @@
       }
       editBadgeEl.appendChild(btn);
     } else {
-      // 'editing' - show Cancel + Save separated
       editBadgeEl.innerHTML = '';
       editBadgeEl.style.gap = '8px';
       const cancel = document.createElement('button');
@@ -4803,9 +4459,6 @@
     positionEditBadge();
   }
 
-  // Decide which way the popover opens: away from the picked element. If the
-  // bar landed below the element, popover slides DOWN from the bar's bottom.
-  // If the bar landed above, popover slides UP from the bar's top.
   function popoverDirection() {
     if (!barEl || !selectedElement) return 'below';
     const br = barEl.getBoundingClientRect();
@@ -4813,15 +4466,8 @@
     return br.top >= er.bottom - 4 ? 'below' : 'above';
   }
 
-  // The popover overlaps the bar by OVERLAP px on the bar-facing side. With
-  // popover z-index below bar, that overlap sits behind bar (invisible) and
-  // reinforces the "tucked behind" feel. Padding compensates so the real
-  // content starts flush with bar's outer edge.
   const TUNE_OVERLAP = 6;
 
-  // Closed clip-path depends on direction: for 'below' clip from the far
-  // (bottom) edge so the reveal grows downward from the bar; for 'above'
-  // clip from the top edge so the reveal grows upward from the bar.
   function closedClipPath(direction) {
     return direction === 'below' ? 'inset(0 0 100% 0)' : 'inset(100% 0 0 0)';
   }
@@ -4842,7 +4488,6 @@
     const direction = popoverDirection();
     const prevDirection = paramsPanelEl.dataset.tuneDirection;
 
-    // top/left/width are NOT in the transition list, so they snap instantly.
     paramsPanelEl.style.left = br.left + 'px';
     paramsPanelEl.style.width = br.width + 'px';
 
@@ -4860,9 +4505,6 @@
     }
     paramsPanelEl.dataset.tuneDirection = direction;
 
-    // If currently closed and direction flipped (or first-time setup),
-    // snap the clip-path to the new direction's closed pose without
-    // transitioning (so the clip doesn't slide across the element).
     if (!tuneOpen && (!prevDirection || prevDirection !== direction)) {
       setClipPath(closedClipPath(direction), false);
     }
@@ -4872,7 +4514,6 @@
     if (!paramsPanelEl) return;
     positionParamsPanel();
     paramsPanelEl.style.pointerEvents = 'auto';
-    // rAF so the positioning paint commits before the transition fires.
     requestAnimationFrame(() => {
       setClipPath('inset(0 0 0 0)', true);
     });
@@ -4885,9 +4526,6 @@
     setClipPath(closedClipPath(direction), true);
   }
 
-  // Build/rebuild the panel's contents for the current variant AND apply
-  // its defaults to the variant wrapper (so scoped CSS responds even before
-  // the user opens the popover). Visibility is governed by tuneOpen.
   function refreshParamsPanel() {
     if (state !== 'CYCLING') {
       paramsCurrentValues = {};
@@ -4907,8 +4545,6 @@
     applyParamDefaults(variantEl, params);
     buildParamsPanel(variantEl, params);
     if (tuneOpen) {
-      // If already visible (variant cycled while open), refresh in place
-      // instead of re-running the clip-path animation.
       const alreadyVisible = paramsPanelEl.style.display === 'block'
         && paramsPanelEl.style.opacity === '1';
       if (alreadyVisible) positionParamsPanel();
@@ -4962,18 +4598,14 @@
     const variantEl = getVisibleVariantEl();
     const params = parseVariantParams(variantEl);
     if (!variantEl || params.length === 0) return;
-    // Build fresh to ensure the current variant's controls are shown.
     applyParamDefaults(variantEl, params);
     buildParamsPanel(variantEl, params);
     tuneOpen = true;
     showParamsPanel();
-    // Kill the bar's shadow on the popover-facing side so the dark popover
-    // doesn't pick up a bright glow line.
     if (barEl) {
       const direction = paramsPanelEl?.dataset.tuneDirection || 'below';
       barEl.style.boxShadow = direction === 'below' ? BAR_SHADOW_UP : BAR_SHADOW_DOWN;
     }
-    // Re-render the bar so the Tune chip picks up the active styling.
     showOrUpdateCyclingBar();
   }
 
@@ -4985,10 +4617,6 @@
       showOrUpdateCyclingBar();
     }
   }
-
-  //
-  // Variant cycling in DOM
-  //
 
   function isVariantShown(el) {
     if (!el) return false;
@@ -5030,9 +4658,6 @@
     const wrapper = findVariantsWrapper(sessionId);
     if (!wrapper) return false;
     updateVariantStateStylesheet(sessionId, num);
-    // Unconditional refresh - covers first-reveal (no-op if state isn't
-    // CYCLING yet, the subsequent CYCLING transition triggers its own
-    // refresh) and every cycle step.
     refreshParamsPanel();
     return true;
   }
@@ -5083,9 +4708,6 @@
 
   function elementMatchesOriginalMarkup(liveEl, origContent) {
     if (!isUsableInjectionAnchor(liveEl) || !origContent) return false;
-    // A matching id is decisive on its own: ids are unique, while the source
-    // tag and class names may not survive the build (component tags, hashed
-    // CSS-module class names).
     if (origContent.id) return liveEl.id === origContent.id;
     if (liveEl.tagName !== origContent.tagName) return false;
 
@@ -5208,10 +4830,6 @@
     const originalMarkup = origContent.outerHTML;
 
     pendingVariantAnchorRetryObserver = new MutationObserver(() => {
-      // Retry once either the anchor element or the session wrapper shows up.
-      // A wrapper can land incomplete ("wrap HMR landed, variant insert did
-      // not"); injectVariantsFromSource owns both cases - it replaces an
-      // existing wrapper from source and clears recoveryWaitingForAnchor.
       const wrapperLanded = !!document.querySelector('[data-impeccable-variants="' + sessionId + '"]');
       if (!wrapperLanded) {
         const liveEl = resolveLiveInjectionAnchor(originalMarkup);
@@ -5239,11 +4857,6 @@
     }
   }
 
-  // The dev server may serve under a non-root base (vite `base`) or a root
-  // that differs from where the helper wrote the preview tree. Root-relative
-  // URLs are tried against the detected base first; the /@fs/ absolute form
-  // is the fallback that works regardless of base and root, as long as the
-  // path is inside the server's fs.allow.
   let detectedDevBase = null;
   function detectDevServerBase() {
     if (detectedDevBase !== null) return detectedDevBase;
@@ -5266,8 +4879,6 @@
     if (absPath) {
       const fsRel = '@fs/' + String(absPath).replace(/^\/+/, '');
       candidates.push(new URL(base + fsRel, location.origin).href);
-      // Vite versions differ on whether @fs is served under base or at the
-      // server root; with a non-root base, try both.
       if (base !== '/') candidates.push(new URL('/' + fsRel, location.origin).href);
     }
     return candidates;
@@ -5278,7 +4889,7 @@
     for (const candidate of candidates) {
       try {
         const url = bust ? candidate + (candidate.includes('?') ? '&' : '?') + 't=' + Date.now() : candidate;
-        const mod = await import(/* @vite-ignore */ url);
+        const mod = await import(url);
         return { mod, url: candidate };
       } catch (err) {
         lastErr = err;
@@ -5289,8 +4900,6 @@
     });
   }
 
-  // Distinguishes "this variant is broken" from "the preview tree is not
-  // reachable from the dev server at all" (wrong root, unserved directory).
   async function probePreviewTree(manifest) {
     if (!manifest?.probeModule) return { ok: true, skipped: true };
     const candidates = componentModuleCandidates(manifest, manifest.probeModule, manifest.probeModuleAbs);
@@ -5311,10 +4920,6 @@
     return svelteRuntimePromise;
   }
 
-  // Svelte component variants declare their params in a sidecar params.json under
-  // componentDir (keyed by variant number), because a `data-impeccable-params`
-  // attribute with JSON braces can't survive the Svelte compiler. Returns a map of
-  // { "1": [...params], "2": [...] }; an empty object when the agent declared none.
   async function loadSvelteComponentParams(manifest) {
     const dir = String(manifest?.revisionDir || manifest?.componentDir || '').replace(/^\/+/, '');
     if (!dir) return {};
@@ -5335,21 +4940,11 @@
     }
   }
 
-
-
-  // NOTE: the compiled component imported from the dev server already carries
-  // its own scoped styles (vite-plugin-svelte injects them on module
-  // evaluation). The old second injection re-fetched the raw source through
-  // the helper and re-prefixed every selector un-hashed, so the same rules
-  // applied twice with different specificity: preview and accepted cascades
-  // disagreed. The single compiled copy is the truth now.
-
   function removeSvelteComponentVariantStyle(session = svelteComponentSession) {
     const style = session?.styleEl;
     if (style?.parentNode) style.parentNode.removeChild(style);
     if (session) session.styleEl = null;
   }
-
 
   function scopeCssBlock(css, prefix) {
     let out = '';
@@ -5472,13 +5067,6 @@
     return values;
   }
 
-  // Contract v2 hydration. The scaffolder preserved control flow, so props
-  // come in kinds: `collection` hydrates from the live DOM's rendered items
-  // (count by the item root selector, texts by slot order), `condition` from
-  // whether the branch's probe element is currently rendered, `text` from the
-  // v1 index-zip run over the markup WITH control-flow regions stripped and
-  // the live tree WITH item elements excluded, so loop tokens can never shift
-  // slots again. `handler` props keep their no-op defaults.
   function buildSveltePropValuesV2(liveEl, manifest) {
     const contract = manifest.propContract || [];
     const values = {};
@@ -5496,8 +5084,6 @@
           const texts = collectVisibleTexts(itemEl).filter((t) => !statics.has(t));
           const item = {};
           slots.forEach((slot, i) => { item[slot.key] = texts[i] != null ? texts[i] : ''; });
-          // Attribute-bound values (href={link.href}) hydrate from the
-          // rendered attribute on the live item element or a descendant.
           for (const slot of entry.item.attrSlots || []) {
             if (item[slot.key] != null || !slot.tag) continue;
             const sel = slot.tag + (slot.classes || []).map((c) => '.' + cssEscapeIdent(c)).join('');
@@ -5506,8 +5092,6 @@
             const value = el ? el.getAttribute(slot.attr) : null;
             if (value != null) item[slot.key] = value;
           }
-          // Keyed each: the key field is never rendered, so hydrate it with a
-          // unique per-index value or Svelte throws each_key_duplicate.
           if (entry.item.keyField && item[entry.item.keyField] == null) {
             item[entry.item.keyField] = 'impeccable-live-' + index;
           }
@@ -5516,21 +5100,16 @@
       } else if (entry.kind === 'condition') {
         if (entry.probe && entry.probe.tag) {
           const selector = entry.probe.tag + (entry.probe.classes || []).map((c) => '.' + cssEscapeIdent(c)).join('');
-          try { values[entry.prop] = !!liveEl.querySelector(selector); } catch { /* keep default */ }
+          try { values[entry.prop] = !!liveEl.querySelector(selector); } catch {}
         } else if (entry.probe && entry.probe.className) {
-          // class:name directive: the live DOM answers directly, either on
-          // the picked element itself or on a descendant carrying the class.
           try {
             values[entry.prop] = liveEl.classList.contains(entry.probe.className)
               || !!liveEl.querySelector('.' + cssEscapeIdent(entry.probe.className));
-          } catch { /* keep default */ }
+          } catch {}
         }
       }
     }
 
-    // Text props outside control flow: strip block regions from the source
-    // markup, exclude live text nodes inside any hydrated item element, then
-    // run the existing zip.
     const textEntries = contract.filter((e) => e.kind === 'text' || e.kind === 'raw');
     if (textEntries.length > 0) {
       const strippedMarkup = stripSvelteBlockRegions(manifest.originalMarkup || '');
@@ -5564,11 +5143,6 @@
     return texts;
   }
 
-  // Remove balanced {#each}...{/each} and {#if}...{/if} regions (including
-  // the delimiters) from a markup string. Nesting-aware. {#key} blocks keep
-  // their CONTENT (it always renders) but lose their delimiter tokens, which
-  // would otherwise consume live text slots in the zip and shift every
-  // following expression.
   function stripSvelteBlockRegions(markup) {
     let out = String(markup || '');
     out = stripSvelteKeyDelimiters(out);
@@ -5603,8 +5177,6 @@
     for (;;) {
       const start = out.indexOf('{#key');
       if (start === -1) break;
-      // The opening tag runs to its matching close brace (expressions inside
-      // may nest braces).
       let depth = 0;
       let i = start;
       let openEnd = -1;
@@ -5625,16 +5197,14 @@
   function cloneWithoutElements(rootEl, excludedEls) {
     if (!excludedEls || excludedEls.length === 0) return rootEl;
     const excludedSet = new Set(excludedEls);
-    // Mark originals, clone, then strip marked clones: identity does not
-    // survive cloneNode, attributes do.
     const MARK = 'data-impeccable-hydration-excluded';
-    for (const el of excludedSet) { try { el.setAttribute(MARK, '1'); } catch { /* detached */ } }
+    for (const el of excludedSet) { try { el.setAttribute(MARK, '1'); } catch {} }
     let clone;
     try {
       clone = rootEl.cloneNode(true);
       clone.querySelectorAll('[' + MARK + ']').forEach((el) => el.remove());
     } finally {
-      for (const el of excludedSet) { try { el.removeAttribute(MARK); } catch { /* detached */ } }
+      for (const el of excludedSet) { try { el.removeAttribute(MARK); } catch {} }
     }
     return clone || rootEl;
   }
@@ -5642,12 +5212,7 @@
   async function mountSvelteComponentVariant(variantNum) {
     if (!svelteComponentSession || !variantNum) return false;
     const { manifest, mountTargetEl, sessionId } = svelteComponentSession;
-    // Resolved before the first await so the failure report can name the module
-    // the browser could not reach, whichever step threw.
     const extension = manifest.componentExtension || 'svelte';
-    // Prefer the server-stamped revision dir: its path changes on every
-    // publish, which is what defeats stale transform caches for files the
-    // dev server does not watch.
     const dirRel = manifest.revisionDir || manifest.componentDir || '';
     const dirAbs = manifest.revisionDirAbs || manifest.componentDirAbs || null;
     const moduleBase = manifest.componentModuleBase
@@ -5698,8 +5263,6 @@
           selectedElement = settledAnchor;
         });
       }
-      // Render truth, not publish truth: this is the only point in the whole
-      // pipeline that proves the user can see variant N.
       reportVariantMounted(sessionId, variantNum, moduleUrl);
       if (mountErrorState?.sessionId === sessionId && mountErrorState.variant === variantNum) {
         clearMountErrorCard();
@@ -5711,8 +5274,6 @@
       }
       console.error('[impeccable] Failed to mount component variant ' + variantNum + ' for ' + sessionId + ':', err);
       reportVariantMountFailed(sessionId, variantNum, moduleUrl, err);
-      // Every mount failure gets the card, so the variant-switch path (which
-      // used to revert with no feedback whatsoever) says what broke too.
       showMountErrorCard(sessionId, {
         variant: variantNum,
         url: moduleUrl,
@@ -5722,8 +5283,6 @@
     }
   }
 
-  // Distinguishes a broken variant from an unreachable preview tree; the
-  // recovery differs (fix the component vs fix the root/dev-server pair).
   async function describeMountFailure(manifest, err) {
     try {
       const probe = await probePreviewTree(manifest);
@@ -5732,7 +5291,7 @@
           + (probe.tried || []).join(', ')
           + '). The resolved app root and the dev server root likely disagree; restart live from the app the dev server serves.';
       }
-    } catch { /* probe is best-effort */ }
+    } catch {}
     return 'The compiled component could not be imported or mounted. ' + (err?.message || 'Unknown error');
   }
 
@@ -5741,7 +5300,7 @@
     const { wrapperEl, detachedOriginal, runtime, mountedInstance } = svelteComponentSession;
     removeSvelteComponentVariantStyle(svelteComponentSession);
     if (mountedInstance && runtime?.unmount) {
-      try { runtime.unmount(mountedInstance); } catch { /* non-fatal */ }
+      try { runtime.unmount(mountedInstance); } catch {}
     }
     if (restoreOriginal && detachedOriginal && wrapperEl?.parentElement) {
       wrapperEl.parentElement.replaceChild(detachedOriginal, wrapperEl);
@@ -5777,7 +5336,7 @@
       applyOriginalAttrsToSvelteAnchor(committed, manifest.originalMarkup || '');
     }
     if (mountedInstance && runtime?.unmount) {
-      try { runtime.unmount(mountedInstance); } catch { /* non-fatal */ }
+      try { runtime.unmount(mountedInstance); } catch {}
     }
     removeSvelteComponentVariantStyle(svelteComponentSession);
     wrapperEl.parentElement.replaceChild(committed, wrapperEl);
@@ -5788,9 +5347,6 @@
   }
 
   async function injectSvelteComponentsFromManifest(manifestPath, sessionId) {
-    // Every (re)injection is a fresh attempt: reset the failure dedupe so a
-    // republish that is STILL broken at the same URL reports again instead of
-    // being swallowed while the agent believes the repair landed.
     lastReportedMountFailure = null;
     const url = 'http://localhost:' + PORT + '/source?token=' + TOKEN + '&path=' + encodeURIComponent(manifestPath);
     try {
@@ -5798,9 +5354,6 @@
       if (!res.ok) throw new Error(String(res.status));
       const manifest = JSON.parse(await res.text());
       if (manifest.id !== sessionId) {
-        // A manifest at the expected path belonging to a different session is
-        // an agent-side publish error. Left as a bare return it stranded the
-        // bar in GENERATING with no explanation and no event.
         const mismatch = 'Manifest at ' + manifestPath + ' belongs to session ' + (manifest.id || 'unknown') + ', not ' + sessionId + '.';
         reportVariantMountFailed(sessionId, visibleVariant || 1, manifestPath, mismatch);
         showMountErrorCard(sessionId, {
@@ -5836,9 +5389,6 @@
         visibleVariant = visibleVariant > 0 && visibleVariant <= arrivedVariants ? visibleVariant : 1;
         const remounted = await mountSvelteComponentVariant(visibleVariant || 1);
         if (!remounted) {
-          // The mount already reported the failure and raised the card.
-          // Advancing to CYCLING here would show a bar claiming variants are
-          // ready over a page where nothing rendered.
           saveSession();
           return;
         }
@@ -5916,11 +5466,6 @@
 
       const mounted = await mountSvelteComponentVariant(visibleVariant);
       if (!mounted) {
-        // The compiled component threw (e.g. a Svelte compile error in the
-        // variant file). mountSvelteComponentVariant already reported the
-        // failure and raised the card; tear the half-built preview down but
-        // keep the session so Retry and a republish still have something to
-        // act on.
         abortSvelteComponentInjection(sessionId);
         return;
       }
@@ -5938,8 +5483,6 @@
       console.log('[impeccable] Mounted ' + arrivedVariants + ' ' + manifest.framework + ' component variants.');
     } catch (err) {
       console.error('[impeccable] Failed to mount component-preview variants:', err);
-      // Report the manifest PATH, never the fetch URL: that URL carries the
-      // live helper token and this string is journaled.
       reportVariantMountFailed(sessionId, visibleVariant || 1, manifestPath, err);
       abortSvelteComponentInjection(sessionId, {
         variant: visibleVariant || 0,
@@ -5967,16 +5510,6 @@
     pendingSvelteComponentRetryObserver.observe(document.body, { childList: true, subtree: true });
   }
 
-  //
-  // Mount acknowledgements
-  //
-  // The agent's `done` says it published files. Only the browser knows whether
-  // the import resolved and the component reached the DOM. These two events
-  // carry that answer back, so the journal, `live-status`, and `live-resume`
-  // can tell "the user is comparing variants" from "nothing ever rendered".
-
-  // Mirror of the caps in live/event-validation.mjs. Trimming here keeps a
-  // stack-trace-sized error from being rejected outright and lost.
   const MOUNT_URL_MAX = 2000;
   const MOUNT_ERROR_MAX = 1000;
 
@@ -5997,10 +5530,6 @@
     const variant = parsed >= 1 ? parsed : 1;
     const url = String(moduleUrl || 'unknown').slice(0, MOUNT_URL_MAX);
     const message = String(error?.message || error || 'Unknown mount error').slice(0, MOUNT_ERROR_MAX);
-    // Progressive delivery and the Retry button both re-enter the same failure.
-    // Report each distinct one once so the agent's poll queue and the journal
-    // stay readable; a genuinely new failure (different variant, URL, or
-    // message) still gets through.
     const key = sessionId + '|' + variant + '|' + url + '|' + message;
     if (lastReportedMountFailure === key) return;
     lastReportedMountFailure = key;
@@ -6015,12 +5544,6 @@
     return text.slice(0, head) + '…' + text.slice(text.length - tail);
   }
 
-  /**
-   * Persistent failure surface. Replaces the old 5s toast: a toast that
-   * disappears while the session is unusable is indistinguishable from no
-   * feedback at all, and the wipe that came with it deleted the only handle on
-   * a session the server still considered live.
-   */
   function showMountErrorCard(sessionId, details) {
     mountErrorState = {
       sessionId: sessionId || currentSessionId || null,
@@ -6084,11 +5607,6 @@
     dismiss.addEventListener('click', (e) => {
       e.stopPropagation();
       clearMountErrorCard();
-      // The card was the only recovery affordance while the bar is hidden;
-      // dismissing it must hand the user back a usable surface. PICKING
-      // reactivates the global mark and the picker. The saved session and
-      // server truth survive, so a later republish (SSE `done`) still
-      // resurrects the comparison through the normal handlers.
       if (state === 'GENERATING') setLiveState('PICKING');
     });
     head.appendChild(dismiss);
@@ -6135,18 +5653,11 @@
       showToast('No variant manifest to retry. Ask the agent to republish.', 5000);
       return;
     }
-    // A retry must be able to report the same failure again, otherwise a second
-    // attempt against an unchanged broken module would look silent.
     lastReportedMountFailure = null;
     if (state !== 'CYCLING') setLiveState('GENERATING');
     injectSvelteComponentsFromManifest(manifestPath, sessionId);
   }
 
-  // Tear down a component preview that could not mount, WITHOUT touching
-  // session identity. The old version cleared localStorage, nulled
-  // currentSessionId, and reset to PICKING, which orphaned a session the server
-  // still had in its journal and made every recovery path unreachable. The DOM
-  // teardown and observer cleanup are still right; the state wipe never was.
   function abortSvelteComponentInjection(sessionId, details) {
     try {
       if (svelteComponentSession?.sessionId === sessionId) {
@@ -6161,16 +5672,10 @@
     hideShaderOverlay();
     if (pendingSvelteComponentRetryObserver) { pendingSvelteComponentRetryObserver.disconnect(); pendingSvelteComponentRetryObserver = null; }
     if (pendingVariantAnchorRetryObserver) { pendingVariantAnchorRetryObserver.disconnect(); pendingVariantAnchorRetryObserver = null; }
-    // The generate submit armed a scroll lock and a variant observer; a page
-    // the user cannot scroll, watched by a stale observer, is exactly the
-    // wrong place to show a card asking them to act.
     stopScrollLock();
     if (variantObserver) { variantObserver.disconnect(); variantObserver = null; }
     removeVariantStateStylesheet();
     hideBar(true);
-    // currentSessionId, the saved session, and the file metadata all survive on
-    // purpose: Retry, a republish from the agent, and a page reload all need
-    // them. saveSession keeps the localStorage cache in step with the server.
     saveSession();
     if (details) showMountErrorCard(sessionId, details);
     else if (!mountErrorState) {
@@ -6178,9 +5683,6 @@
     }
   }
 
-  // Hard reset for the one case that is not a mount failure: a cycling state
-  // with nothing to cycle. There is no variant to retry and no URL to report,
-  // so the session really is over.
   function resetSvelteComponentSession(sessionId, message) {
     try {
       if (svelteComponentSession?.sessionId === sessionId) {
@@ -6216,18 +5718,9 @@
     if (message) showToast(message, 5000);
   }
 
-  // How many delayed re-reads a completion-driven source fallback gets when
-  // the fetched source still shows only the preflight scaffold, before the
-  // failure is surfaced via recoverEmptyCycling.
   const COMPLETED_SOURCE_FALLBACK_RETRIES = 3;
   const COMPLETED_SOURCE_FALLBACK_RETRY_MS = 1200;
 
-  /**
-   * Terminal recovery for a session whose source-side scaffolding no longer
-   * exists. The discard event is best-effort: with no agent polling it parks
-   * the durable session in discard_requested, which no resume path adopts;
-   * with an agent attached it triggers the normal discard finalization.
-   */
   function discardOrphanedSession(reason) {
     const sessionId = currentSessionId;
     if (!sessionId) return;
@@ -6249,19 +5742,6 @@
       || src.indexOf('impeccable-variants-start ' + sessionId) !== -1;
   }
 
-  /**
-   * Orphan probe for JSX targets (#439 + #454). An unmounted wrapper and a
-   * wrapper deleted from source look identical in the DOM, and only the second
-   * is an orphan, so the DOM alone cannot decide. #454 forbids parsing or
-   * injecting raw JSX; reading the file as plain text and matching the session
-   * marker honors that, because no DOM is ever built from what comes back.
-   * Marker present means the component is simply not mounted right now (a
-   * closed modal, another route) and the variant observer keeps waiting.
-   * Marker absent after the same retry budget the HTML path uses means the
-   * file was edited out from under the session, which no reload, HMR push, or
-   * server restart can repair, so the session self-discards and hands the
-   * surface back to the picker.
-   */
   function probeJsxWrapperForOrphan(filePath, sessionId, opts) {
     const attempt = opts._orphanAttempt || 0;
     const url = 'http://localhost:' + PORT + '/source?token=' + TOKEN + '&path=' + encodeURIComponent(filePath);
@@ -6272,13 +5752,6 @@
         injectVariantsFromSource(filePath, sessionId, { ...opts, _orphanAttempt: attempt + 1 });
       }, COMPLETED_SOURCE_FALLBACK_RETRY_MS);
     };
-    // Discarding is durable (the session moves to the discarded phase and the
-    // picker replaces it), so it needs evidence that the wrapper is gone: a
-    // read that answers without the marker, or a 404 (the file itself was
-    // renamed or deleted). Either kind retries on the shared budget first.
-    // A read that fails for any other reason (the server briefly away, a
-    // transient fetch error) says nothing about the wrapper; after the budget
-    // the session is kept, the user told, and the next event retries.
     const onNoWrapper = (reason) => {
       if (!stillActive()) return;
       if (attempt < COMPLETED_SOURCE_FALLBACK_RETRIES) { retryLater(); return; }
@@ -6320,19 +5793,10 @@
     expectedVariants = parseInt(wrapper.dataset.impeccableVariantCount || arrivedVariants);
     if (arrivedVariants <= 0) {
       if (state === 'GENERATING') {
-        // Mid-generation the source legitimately holds a scaffold wrapper
-        // with no variants yet (the server-side preflight wraps before the
-        // agent writes). Tearing the session down here would destroy an
-        // in-flight generation; stay in GENERATING — the variant observer
-        // is armed and the server re-delivers a missed `done`.
         if (!opts.generationCompleted) {
           console.log('[impeccable] Source has scaffold but no variants yet; still generating.');
           return;
         }
-        // Generation finished, yet the read shows only the scaffold: the
-        // source view is stale and no further event will fire. Re-read a
-        // few times before surfacing recovery — a single silent return
-        // here would strand the tab in GENERATING forever.
         const attempt = opts.attempt || 0;
         if (attempt < COMPLETED_SOURCE_FALLBACK_RETRIES) {
           console.log('[impeccable] Generation is done but source shows no variants yet; retrying read ('
@@ -6369,17 +5833,6 @@
     console.log('[impeccable] Injected ' + arrivedVariants + ' variants from source file.');
   }
 
-  /**
-   * No-HMR fallback: fetch the raw source file from the live server,
-   * parse it, extract the variant wrapper, and inject it into the live DOM.
-   * This works even when the dev server caches HTML (Bun, static servers).
-   *
-   * opts.generationCompleted marks callers that KNOW the agent finished (a
-   * `done` arrived or the server reported a completed generation). For them an
-   * empty read is a stale source view and no further event is coming, so the
-   * read retries a few times and then surfaces recovery. Callers without the
-   * flag may be mid-generation and wait indefinitely for the real completion.
-   */
   function injectVariantsFromSource(filePath, sessionId, opts = {}) {
     if (isSvelteComponentManifestPath(filePath)) {
       injectSvelteComponentsFromManifest(filePath, sessionId);
@@ -6392,9 +5845,6 @@
         completeSourceInjection(liveWrapper, sessionId, { ...opts, filePath });
         return;
       }
-      // #454: never fetch/parse JSX. Missing wrap waits for mount (closed
-      // modal / other route). Insert scaffolds stay for late HMR. A replace
-      // scaffold with no variants after retries is a failed generation.
       if (opts.generationCompleted && sessionId === currentSessionId) {
         const attempt = opts.attempt || 0;
         if (attempt < COMPLETED_SOURCE_FALLBACK_RETRIES) {
@@ -6437,13 +5887,6 @@
         const srcWrapper = doc.querySelector('[data-impeccable-variants="' + sessionId + '"]');
         if (!srcWrapper) {
           console.warn('[impeccable] Variant wrapper not found in source file.');
-          // A resumed cycling session whose wrapper is gone from source is an
-          // ORPHAN: the file was edited or regenerated out from under it, so
-          // no reload, HMR push, or server restart can ever complete it, and
-          // the frozen picker it leaves behind used to need a manual
-          // live-complete --discarded. Retry a few reads first (an agent
-          // rewrite or HMR patch may be mid-flight), then self-discard and
-          // hand the surface back to the picker.
           if (opts.orphanDiscard && sessionId === currentSessionId) {
             const attempt = opts._orphanAttempt || 0;
             if (attempt < COMPLETED_SOURCE_FALLBACK_RETRIES) {
@@ -6582,7 +6025,7 @@
       visibleVariant = next;
       showOrUpdateCyclingBar();
       saveSession();
-      const shown = await showVariantInDOM(currentSessionId, next); // calls refreshParamsPanel itself
+      const shown = await showVariantInDOM(currentSessionId, next);
       if (!shown) {
         visibleVariant = previous;
         await showVariantInDOM(currentSessionId, previous);
@@ -6637,12 +6080,6 @@
     return 0;
   }
 
-  // Resolve the element that represents the variant's visible content.
-  // Contract: each variant div should contain exactly one top-level element
-  // (the full replacement). In practice a model may ship loose siblings or
-  // lead with <style>/<script>. Be defensive: skip non-visual elements, and
-  // if the variant has multiple element children, use the variant div itself
-  // (it wraps all of them and gets correct bounds).
   function pickVariantContent(wrapper, index) {
     if (!wrapper) return null;
     const variantDiv = wrapper.querySelector('[data-impeccable-variant="' + index + '"]');
@@ -6656,21 +6093,9 @@
     return variantDiv;
   }
 
-  // Variant visibility and range/toggle params are expressed through ONE
-  // injected stylesheet, never inline attributes on the variant divs. Those
-  // divs are scaffolded into page source, so SSR frameworks (Next.js App
-  // Router) server-render them; toggling their `hidden` / inline `style` /
-  // `--p-*` client-side trips a React 19 hydration mismatch on the next
-  // Fast-Refresh re-render — the same failure mode the scroll-anchor (#276)
-  // and pick-cursor (#286) fixes address. A stylesheet rule has the same
-  // computed effect without mutating any hydrated element's attributes.
-  // (steps params keep driving `data-p-*` attributes, matching scoped CSS.)
   const VARIANT_HIDE_DECL = 'display: none !important;';
   const VARIANT_SHOW_DECL = 'display: block !important;';
 
-  // Build a direct-child variant selector for a session. With `num`, targets a
-  // single variant (`… > [data-impeccable-variant="N"]`); without it, targets
-  // every variant via the bare `[data-impeccable-variant]` attribute.
   function variantStateSelector(sessionId, num) {
     const wrapper = '[data-impeccable-variants="' + sessionId + '"]';
     const variant = num == null
@@ -6679,9 +6104,6 @@
     return wrapper + ' > ' + variant;
   }
 
-  // Serialize the visible variant's knob values into `--p-<id>` custom-property
-  // declarations. Only range (number) and toggle (boolean) values become a
-  // custom property; steps params drive `data-p-*` attributes instead.
   function variantParamDecls(values) {
     return Object.entries(values || {})
       .map(([id, val]) => {
@@ -6702,12 +6124,9 @@
       (document.head || document.documentElement).appendChild(styleEl);
     }
 
-    // Hide every variant except the visible one (incl. the SSR'd "original").
     const hideOthers = variantStateSelector(sessionId)
       + ':not([data-impeccable-variant="' + num + '"]) { ' + VARIANT_HIDE_DECL + ' }';
 
-    // Force-show the visible variant (beats the source inline display:none on
-    // v2/v3) and apply its knob values as custom properties.
     const showVisible = variantStateSelector(sessionId, num)
       + ' { ' + VARIANT_SHOW_DECL + variantParamDecls(paramsCurrentValues) + ' }';
 
@@ -6741,11 +6160,6 @@
     document.getElementById(discardStateStyleId(sessionId))?.remove();
   }
 
-  /**
-   * Every wrapper a discard has to unwind. A target inside a `.map()` renders
-   * one wrapper per item, so the hide, the release, and the existence checks
-   * all have to speak about the same set.
-   */
   function discardedWrappers(sessionId) {
     if (!sessionId) return [];
     return [...document.querySelectorAll('[data-impeccable-variants="' + sessionId + '"]')];
@@ -6762,12 +6176,6 @@
     wrapper.remove();
   }
 
-  /**
-   * Undo the discard hide on every wrapper it covered. Releasing only the
-   * first match left the other mapped items sitting at display:none with
-   * their original content never restored, on exactly the static and
-   * missed-HMR flows this fallback exists for.
-   */
   function releaseDiscardedStaticWrappers(sessionId, wrappers) {
     removeDiscardStateStylesheet(sessionId);
     const set = wrappers && wrappers.length ? wrappers : discardedWrappers(sessionId);
@@ -6818,8 +6226,6 @@
     return Number.isFinite(top) ? top : null;
   }
 
-  // Hold window.scrollY at a fixed value across DOM mutations inside the
-  // session's wrapper (HMR patches, variant inserts, cycle swaps).
   function startScrollLock(sessionId, initialTargetY, initialAnchorTop) {
     stopScrollLock();
     scrollLockTargetY = typeof initialTargetY === 'number' && isFinite(initialTargetY)
@@ -6831,15 +6237,6 @@
 
     try { history.scrollRestoration = 'manual'; } catch {}
 
-    // Suppress the browser's scroll-anchoring on the scroll root so it can't
-    // fight our manual scroll correction. Apply this as a stylesheet rule, not
-    // as inline `style` on <html>/<body>: those elements are server-rendered by
-    // frameworks like Next.js App Router, and mutating their inline style makes
-    // React 19 report a hydration mismatch on the next Fast-Refresh re-render.
-    // A <style> rule has the same computed effect without touching any hydrated
-    // element's attributes. Like the inline version, it is recreated on every
-    // startScrollLock call, so reload survival (driven by the persisted scroll
-    // key) is unaffected.
     let anchorLockStyle = document.getElementById(SCROLL_ANCHOR_LOCK_ID);
     if (!anchorLockStyle) {
       anchorLockStyle = document.createElement('style');
@@ -6895,10 +6292,6 @@
       document.getElementById(SCROLL_ANCHOR_LOCK_ID)?.remove();
     }, { once: true });
     const sig = { signal: scrollLockAbort.signal };
-    // Track whether the most recent scroll came from a user gesture. We
-    // gate user-scroll re-anchoring on this flag so programmatic smooth
-    // scrolls (browser reload-restore, scrollIntoView from other scripts)
-    // don't accidentally update our target.
     let userGestureAt = 0;
     const USER_GESTURE_WINDOW_MS = 250;
 
@@ -6920,10 +6313,6 @@
       if (['PageDown', 'PageUp', ' ', 'End', 'Home', 'ArrowDown', 'ArrowUp'].includes(e.key)) markGesture('key:' + e.key);
     }, sig);
 
-    // Correct on EVERY scroll event: whether it's the browser's
-    // post-reload animated restore or some other script calling
-    // scrollIntoView, we want to snap back immediately. Only skip if a
-    // user gesture fired in the last 250ms.
     window.addEventListener('scroll', () => {
       const now = window.scrollY;
       if (scrollLockTargetY == null) return;
@@ -6932,8 +6321,6 @@
       window.scrollTo({ top: scrollLockTargetY, left: window.scrollX, behavior: 'instant' });
     }, { passive: true, ...sig });
 
-    // Apply target synchronously, not via rAF - racing the browser's
-    // restore or a smooth-scroll animation means we want to win now.
     if (Math.abs(window.scrollY - scrollLockTargetY) > 0.5) {
       window.scrollTo({ top: scrollLockTargetY, left: window.scrollX, behavior: 'instant' });
     }
@@ -6945,29 +6332,8 @@
     if (scrollLockAbort) { scrollLockAbort.abort(); scrollLockAbort = null; }
     scrollLockTargetY = null;
     scrollLockAnchorTop = null;
-    // NOTE: do NOT clear the persistent scroll key here. startScrollLock
-    // calls us as a reset, and clearing the key would nuke the Go-time
-    // scrollY that the next resume needs to read.
   }
 
-  //
-  // MutationObserver for progressive variant reveal
-  //
-
-  // A session id can have more than one wrapper in the DOM: the target may sit
-  // inside a `.map()` callback (the wrapper renders once per item), or the
-  // agent may have relocated the wrapper out of the shared primitive live-wrap
-  // scaffolded into. A plain first match can then pin an empty scaffold while
-  // the real variants sit in a later wrapper, which strands the session at
-  // 0/N and leaves the bar, the params panel, and accept all reading the
-  // wrong element. Prefer a wrapper that actually holds variants. With zero
-  // or one match this is exactly the querySelector it replaces.
-  //
-  // Every lookup of the ACTIVE session's wrapper goes through here. The
-  // remaining raw `[data-impeccable-variants=...]` uses are deliberate: bare
-  // existence checks, selector strings for stylesheets and observers (which
-  // want to cover every match), `querySelectorAll` sweeps, and the parsed
-  // source document, which is not this document.
   function pickPopulatedVariantsWrapper(selector) {
     const matches = document.querySelectorAll(selector);
     if (matches.length < 2) return matches[0] || null;
@@ -6979,38 +6345,29 @@
     return matches[0];
   }
 
-  /** The wrapper holding `sessionId`'s variants, or null without an id. */
   function findVariantsWrapper(sessionId) {
     if (!sessionId) return null;
     return pickPopulatedVariantsWrapper('[data-impeccable-variants="' + sessionId + '"]');
   }
 
-  /** Any live variant wrapper, for the resume paths that have no id yet. */
   function findAnyVariantsWrapper() {
     return pickPopulatedVariantsWrapper('[data-impeccable-variants]');
   }
 
   function startVariantObserver(sessionId) {
-    let updating = false; // re-entrancy guard
+    let updating = false;
 
     const obs = new MutationObserver((mutations) => {
       if (updating) return;
 
-      // Only react to mutations that add nodes with data-impeccable-variant,
-      // or mutations inside the variant wrapper. Ignore our own bar/UI changes.
       let dominated = false;
       for (const m of mutations) {
         if (m.target.closest?.('[data-impeccable-variants]')) { dominated = true; break; }
         for (const n of m.addedNodes) {
           if (n.nodeType !== 1) continue;
-          // Direct hit: the added node itself is the wrapper or a variant.
           if (n.dataset?.impeccableVariants || n.dataset?.impeccableVariant) {
             dominated = true; break;
           }
-          // Subtree hit: framework HMR (notably SvelteKit) sometimes replaces
-          // a whole subtree where the wrapper is a descendant of the added
-          // node. Without this check, the observer ignores those mutations
-          // and the session stays in GENERATING forever.
           if (n.querySelector?.('[data-impeccable-variants],[data-impeccable-variant]')) {
             dominated = true; break;
           }
@@ -7025,9 +6382,6 @@
       const variants = wrapper.querySelectorAll('[data-impeccable-variant]:not([data-impeccable-variant="original"])');
       const count = variants.length;
 
-      // Re-anchor selectedElement if it was detached by live-wrap's HMR swap.
-      // Without this, the shader / highlight / bar track a zero-rect phantom
-      // and the overlay appears frozen.
       if (selectedElement && !document.body.contains(selectedElement)) {
         const isInsert = wrapper.dataset.impeccableMode === 'insert';
         if (isInsert) {
@@ -7049,7 +6403,6 @@
         ensureInsertPlaceholder();
       }
 
-      // Nothing new
       if (count <= arrivedVariants) return;
 
       updating = true;
@@ -7060,9 +6413,6 @@
         const savedVisibleVariant = saved && saved.id === sessionId ? saved.visible : 0;
         visibleVariant = savedVisibleVariant > 0 && savedVisibleVariant <= arrivedVariants ? savedVisibleVariant : 1;
         showVariantInDOM(sessionId, visibleVariant);
-        // showVariantInDOM hid the original (display:none); if we were still
-        // anchored to the original's content, its boundingRect is now zero
-        // and the bar snaps to (0,0). Re-point at the visible variant instead.
         const visEl = pickVariantContent(wrapper, visibleVariant);
         if (visEl) selectedElement = visEl;
       }
@@ -7098,10 +6448,6 @@
     return obs;
   }
 
-  //
-  // Bar scroll tracking
-  //
-
   function startScrollTracking() {
     function tick() {
       if (state === 'CONFIGURING' || state === 'GENERATING' || state === 'CYCLING') {
@@ -7124,8 +6470,6 @@
         const annotTarget = resolveBarAnchor();
         if (annotTarget) positionAnnotOverlay(annotTarget);
       }
-      // Shader overlay (via debug P toggle or generation) is repositioned
-      // by its own branch below; debug no longer has a separate overlay.
       if (shaderState) positionShaderOverlay();
       scrollRaf = requestAnimationFrame(tick);
     }
@@ -7136,23 +6480,12 @@
     if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = null; }
   }
 
-  //
-  // ------------------------------------------------------------------
-  // Agent-initiated targeting (the `generate` command). The agent names an
-  // element by CSS selector over POST /agent-target; the server pushes an
-  // `agent_target` SSE message here. The overlay resolves the selector,
-  // scrolls the element into view, enters the same picked state a user
-  // click produces, and fires the normal Go pipeline, so everything
-  // downstream (generate event, variants, cycling, accept) is unchanged.
-  // The verdict goes back through POST /agent-target-result, which resolves
-  // the agent's held-open CLI call.
-
   function postAgentTargetResult(targetId, result) {
     fetch('http://localhost:' + PORT + '/agent-target-result?token=' + TOKEN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: TOKEN, targetId, clientId: AGENT_TARGET_CLIENT_ID, ...result }),
-    }).catch(() => { /* server gone; nothing to report to */ });
+    }).catch(() => {});
   }
 
   function describeAgentTargetCandidate(el) {
@@ -7183,8 +6516,6 @@
           error: 'no_match',
           selector: msg.selector,
           matchCount: 0,
-          // How many nodes the raw selector hit before the pickable/text
-          // filters: distinguishes a wrong selector from an unpickable match.
           rawMatchCount: matched.length,
         },
       };
@@ -7222,28 +6553,15 @@
       if (fallback) clearTimeout(fallback);
       done();
     };
-    // scrollend where supported; a timer covers engines without it and the
-    // no-movement case (element already at its final resting position).
     addEventListener('scrollend', finish, true);
     fallback = setTimeout(finish, 1200);
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 
-  // One id per page load: the server keys claims and roll-call reports on
-  // it, and only the tab that holds the lease can renew it.
   const AGENT_TARGET_CLIENT_ID = id8();
 
-  // The agent target an agent-initiated Go is serving: set by
-  // actOnAgentTarget around its handleGo call, read once by handleGo.
   let agentTargetForGo = null;
 
-  // The helper's word on its global bar. The generate lane asks the helper
-  // to keep it out of the way (`impeccable live --no-live-bar`, or an agent
-  // target carrying hideLiveBar), and the helper tells every connected tab
-  // at once (`live_bar`) and every later connection on `connected`, so the
-  // bar stays hidden in every tab, through reloads, the accept, and the
-  // bake, until the helper stops and takes the overlay with it. The variant
-  // controls still show.
   let liveBarHiddenByHelper = false;
 
   function applyLiveBarPreference(hidden) {
@@ -7251,10 +6569,6 @@
     setLiveBarHidden(liveBarHiddenByHelper);
   }
 
-  // A plain live session must never notice this code: hiding remembers the
-  // bar's own display value and restoring puts exactly that back, and a
-  // restore on a bar that is not hidden is a no-op, so the `connected`
-  // frame every session receives changes nothing unless the lane asked.
   function setLiveBarHidden(hidden) {
     if (!globalBarEl) return;
     if (hidden) {
@@ -7279,10 +6593,6 @@
       .catch(() => ({ granted: false, pending: false }));
   }
 
-  // `exceptTargetId` is the target this call is about: a tab acting on it
-  // is not busy for itself, but it is busy for every other target, or two
-  // held requests could both be claimed here and the second Go would
-  // overwrite the session the first one minted.
   function agentTargetBusyReason(exceptTargetId) {
     if (pendingApplyInFlight) return 'manual_apply_in_flight';
     if (state !== 'IDLE' && state !== 'PICKING' && state !== 'CONFIGURING') return 'session_active';
@@ -7292,11 +6602,6 @@
     return null;
   }
 
-  // Targets this tab declined as busy. A busy report is only this tab's word
-  // at that moment: the moment it is free again (setLiveState), it claims
-  // each of these as eligible, and the server drops the stale report, so a
-  // busy verdict is never built on a tab that has since gone idle. The
-  // server denies claims for resolved targets, so retries are harmless.
   const busyDeclinedTargets = new Map();
 
   function declineAgentTargetBusy(msg, busy) {
@@ -7305,26 +6610,12 @@
     claimAgentTarget(msg.targetId, { eligible: false, state, reason: busy });
   }
 
-  // A torn-down overlay, or one whose helper connection is gone, cannot
-  // serve a target and must not even claim one: it would hold the lease for
-  // a request it will never act on.
   function agentTargetOverlayGone() {
     return !evtSource;
   }
 
-  // A denied claimant retries at this cadence, a little over the lease, so
-  // the first retry after a dead holder's lease lapses is granted.
   const AGENT_TARGET_RESCUE_RETRY_MS = 3500;
 
-  // Claim the lease and act as the holder. A denied claim means another tab
-  // holds the lease. That holder can die before posting its result (reload,
-  // crash, even after renewing), and its lease lapses after ~3s, so this tab
-  // keeps retrying for as long as the server still holds the request: the
-  // answer's `pending` is the server's word that the request is alive, and
-  // it turns false the moment the request resolved or timed out, so no tab
-  // retries a request nobody awaits. A tab that turned busy meanwhile joins
-  // the roll call instead of taking a lease it cannot use. The first claim
-  // and the busy-to-idle re-claim share this.
   function claimAndActOnAgentTarget(msg) {
     if (agentTargetOverlayGone()) return;
     const busy = agentTargetBusyReason(msg.targetId);
@@ -7346,49 +6637,17 @@
     }
   }
 
-  // This page's participation in each target it heard: 'acting' once a
-  // claim was granted, 'done' once it replied (or stood down from a lapsed
-  // lease), else the word it last gave. The server replays pending targets
-  // to every connection that opens. After a reconnect that overlapped the
-  // old connection the server still holds this page's word; after one that
-  // did not, it dropped the word on the close, so a replayed target is
-  // handled again: a busy or unresolvable page re-declines (idempotent), an
-  // idle page claims.
   const agentTargetsSeen = new Map();
   function noteAgentTarget(targetId, status) {
     agentTargetsSeen.set(targetId, status);
     if (agentTargetsSeen.size > 100) agentTargetsSeen.delete(agentTargetsSeen.keys().next().value);
   }
 
-  // A target this page took a lease on is off-limits for a replay: while
-  // acting (a second claim or Go), and once done, because its result may
-  // still be on the wire and this tab is GENERATING by then, so handling
-  // the replay would decline busy, hand the lease back mid-resolution, and
-  // let another tab fire a second Go.
   function agentTargetTaken(targetId) {
     const status = agentTargetsSeen.get(targetId);
     return status === 'acting' || status === 'done';
   }
 
-  // Only a page that can resolve the target claims it. A tab whose page
-  // lacks the element declines with its resolution verdict instead, so a
-  // first-wins claim never lets the wrong page answer for a target that
-  // another page has. The server prefers a busy report (a tab that could
-  // serve later) over these, and returns the resolution verdict only when
-  // no connected page can serve.
-  //
-  // An element can be momentarily absent (a route still rendering, an HMR
-  // commit mid-swap), so a failed resolution is not this page's final word:
-  // it is re-checked a few times over about two seconds, claiming the
-  // moment the element mounts, and only the last miss is reported. The
-  // server's timeout still bounds the whole exchange.
-  // The page reports the miss at once (so the other overlays' words can
-  // complete the roll call) and keeps re-checking at this cadence for as
-  // long as the server says the request is pending: the server holds an
-  // all-no_match roll call open for a short grace precisely so a late mount
-  // can still be claimed, drops the stale report on an eligible claim, and
-  // ends the watch by answering pending:false once the request resolved or
-  // timed out.
   const AGENT_TARGET_RESOLVE_WATCH_MS = 500;
 
   function declineAgentTargetUnresolvable(msg) {
@@ -7412,8 +6671,6 @@
     if (busy) { declineAgentTargetBusy(msg, busy); return; }
     const probe = resolveAgentTargetElement(msg);
     if (!probe.error) { claimAndActOnAgentTarget(msg); return; }
-    // Still unresolvable: re-report (idempotent); the answer says whether
-    // the server is still holding the request open.
     reportAgentTargetUnresolvable(msg, probe.error || lastError);
   }
 
@@ -7423,37 +6680,23 @@
     noteAgentTarget(msg.targetId, 'heard');
     const busy = agentTargetBusyReason(msg.targetId);
     if (busy) {
-      // Roll call: a busy tab reports itself and never acts. The server
-      // answers `busy` the moment every connected overlay has reported, so
-      // an idle tab elsewhere is never raced by a timer.
       declineAgentTargetBusy(msg, busy);
       return;
     }
     if (declineAgentTargetUnresolvable(msg)) return;
-    // Eligible tabs race for the server's lease and only the holder acts. A
-    // hidden tab yields a short head start so a visible one wins when both
-    // exist, and still serves the request on its own: the user finds the
-    // selection waiting when they return to it.
     setTimeout(() => claimAndActOnAgentTarget(msg), document.hidden ? 150 : 0);
   }
 
   function actOnAgentTarget(msg) {
     if (agentTargetOverlayGone()) return;
-    // Every exit ends this tab's acting state, so a later target is not
-    // refused for a Go that already happened or never will.
     const reply = (result) => { noteAgentTarget(msg.targetId, 'done'); postAgentTargetResult(msg.targetId, result); };
     const busy = agentTargetBusyReason(msg.targetId);
     if (busy) {
-      // Turned busy between claim and act: report it, which also hands the
-      // lease back so the roll call can complete or a rescuer can claim.
       declineAgentTargetBusy(msg, busy);
       return;
     }
     const resolved = resolveAgentTargetElement(msg);
     if (resolved.error) {
-      // The element went away between claim and act. A result would end the
-      // request for every tab; a decline hands the lease back so another
-      // page or a remount can still serve it.
       reportAgentTargetUnresolvable(msg, resolved.error);
       return;
     }
@@ -7468,22 +6711,10 @@
       return;
     }
     scrollAgentTargetIntoView(el, () => {
-      // Torn down during the scroll settle: do not renew. The lease lapses
-      // for a rescuer instead of Go minting a session on a dismantled
-      // overlay.
       if (agentTargetOverlayGone()) return;
-      // Renew the lease right before the irreversible part: a tab whose
-      // lease lapsed while it scrolled (a rescuer took over) stops here, so
-      // one request never gets two Go presses.
       claimAgentTarget(msg.targetId, { eligible: true }).then((renewal) => {
         if (!renewal.granted) { noteAgentTarget(msg.targetId, 'done'); return; }
-        // An insert placement left mid-configure gives way, exactly as a
-        // click outside it does in handleClick.
         if (state === 'CONFIGURING' && configureKind === 'insert') cancelInsertConfigure();
-        // Mirror of the user-click pick entry in handleClick, minus the
-        // pick-mode gate (the agent's intent replaces the toggle); the entry
-        // goes through beginNewLiveConfiguration like every other pick so
-        // deferred recovery sees a fresh interaction revision.
         selectedElement = el;
         beginNewLiveConfiguration();
         showHighlight(selectedElement);
@@ -7495,20 +6726,11 @@
         startScrollTracking();
         maybePrefetchPage();
         maybeWarnConditionalAncestor(selectedElement);
-        // Preset what the agent asked for, then fire the same Go a user press
-        // fires. handleGo reads exactly these inputs.
         selectedAction = msg.action;
         selectedCount = msg.count;
-        // updateBarContent rebuilds the configure row and replaces the input
-        // element, so the prompt must be written into the input it creates,
-        // never before (the action-chip click handler does the same dance).
         updateBarContent('configure');
         const input = uiGetById(PREFIX + '-input');
         if (input) input.value = msg.prompt || '';
-        // The target rides on the generate event too: the helper resolves
-        // the request from whichever lands first, so a page that dies
-        // between Go and its result cannot leave the request pending for a
-        // second Go elsewhere.
         const candidate = describeAgentTargetCandidate(el);
         agentTargetForGo = { targetId: msg.targetId, matchCount: resolved.matchCount, action: msg.action, count: msg.count, element: candidate };
         handleGo();
@@ -7529,30 +6751,24 @@
     });
   }
 
-  // SSE (server→browser) + fetch POST (browser→server)
-  // Zero-dependency replacement for WebSocket.
-  //
-
   let evtSource = null;
   let sseRetries = 0;
-  const SSE_MAX_RETRIES = 20;  // generous: heartbeats keep the connection alive, so retries mean real trouble
+  const SSE_MAX_RETRIES = 20;
 
   function connectSSE() {
     evtSource = new EventSource('http://localhost:' + PORT + '/events?token=' + TOKEN + '&clientId=' + AGENT_TARGET_CLIENT_ID);
 
     evtSource.onopen = () => {
-      sseRetries = 0; // reset on successful (re)connect
+      sseRetries = 0;
     };
 
     evtSource.onmessage = (e) => {
-      sseRetries = 0; // reset on any successful message
+      sseRetries = 0;
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
       switch (msg.type) {
         case 'connected':
           applyLiveBarPreference(msg.hideLiveBar === true);
           hasProjectContext = !!msg.hasProjectContext;
-          // The generate lane runs without PRODUCT.md by design and never
-          // sends the user to init, so its quiet chrome skips this notice.
           if (!hasProjectContext && !liveBarHiddenByHelper) showToast(`No PRODUCT.md found. Variants will be brand-agnostic. Run ${IMPECCABLE_COMMAND} init to generate one.`, 7000);
           console.log('[impeccable] Live mode connected.');
           syncAgentPollingUi(!!msg.agentPolling);
@@ -7574,12 +6790,7 @@
           break;
         case 'agent_phase':
           if (msg.id === currentSessionId && (state === 'GENERATING' || state === 'CYCLING')) {
-            // Advance the visible phase monotonically. A behind/resumed
-            // checkpoint may carry an earlier phase for internal bookkeeping,
-            // but the bar must not move backward.
             if (shouldAdvancePhase(generationPhase, msg.phase)) generationPhase = msg.phase;
-            // The deferred parameter pass reports through `variant_progress`
-            // with publicationKind 'params', not through agent_phase.
             updateBarContent(state === 'CYCLING' ? 'cycling' : 'generating');
             saveSession();
           }
@@ -7589,19 +6800,8 @@
             if (msg.publicationKind === 'params') parameterGenerationState = 'loading';
             rememberSessionFileMeta(msg);
             if (isFrameworkComponentPreviewMode(msg.previewMode) && msg.previewFile) {
-              // Component-preview (Svelte/Vue) progressive delivery: the browser
-              // mounts compiled components, so there is no framework-owned DOM
-              // to race. Keep streaming each checkpoint into the preview.
               injectSvelteComponentsFromManifest(msg.previewFile, msg.id);
             }
-            // Source-preview targets: do NOT source-inject per checkpoint.
-            // Immediate injection races framework (React/Vue) ownership mid-
-            // generation and triggers removeChild errors on the next HMR
-            // commit. Let HMR own reconciliation while variants stream in;
-            // source injection runs only on the final `done` (which keeps its
-            // 750ms settle + retry ladder for non-HMR harnesses like Cursor).
-            // The visible progress count still advances from the variant
-            // MutationObserver as HMR lands each variant.
           }
           break;
         case 'steer_done':
@@ -7625,7 +6825,6 @@
             injectSvelteComponentsFromManifest(currentPreviewFile, msg.id);
             break;
           }
-          // Variants already arrived via HMR → normal transition.
           if (arrivedVariants >= expectedVariants && expectedVariants > 0) {
             if (state === 'GENERATING') {
               setLiveState('CYCLING');
@@ -7634,14 +6833,9 @@
               disableInlineEdit();
               refreshParamsPanel();
             }
-            // The done reply is the agent's last word on this generation:
-            // with every variant mounted and no knobs declared, the Tune
-            // chip must stop spinning. A reload between the mount and this
-            // reply restored the pending state from the cache.
             completeParameterGenerationIfReady();
             break;
           }
-          // Source fallback when HMR did not land variants in this tab.
           if (msg.file && msg.id && state === 'GENERATING' && msg.id === currentSessionId) {
             setTimeout(() => {
               if (arrivedVariants >= expectedVariants && expectedVariants > 0) return;
@@ -7650,13 +6844,6 @@
             }, 750);
             break;
           }
-          // Variants are in source but not in the DOM yet. Common when the
-          // picked element lived inside conditional render (closed modal,
-          // hidden tab, a route the user navigated away from). The variant
-          // MutationObserver stays armed and auto-transitions to CYCLING
-          // the moment the wrapper actually mounts. Nudge the user toward
-          // that path with a toast - better than the prior force-reload
-          // which reset framework state and left the session stuck.
           setTimeout(() => {
             if (arrivedVariants >= expectedVariants && expectedVariants > 0) return;
             if (state !== 'GENERATING') return;
@@ -7668,19 +6855,10 @@
           break;
         case 'complete':
         case 'accept':
-          // The real accept result arrived: the awaited failure window closed.
           if (awaitingAcceptResult?.id && msg.id === awaitingAcceptResult.id) awaitingAcceptResult = null;
           if (maybeCompleteAcceptedSession(msg)) break;
           break;
         case 'agent_done':
-          // The deterministic accept has already committed the reviewed DOM
-          // and fenced generation. Carbonize may continue in the background;
-          // it must not hold the foreground picker hostage.
-          // Only a carbonize agent_done is provably accept-side: accept
-          // unlocks at the first variant, so a late generation agent_done
-          // for the same session id can still arrive after Accept and must
-          // not close the awaited failure window early (the SSE broadcast
-          // carries no sourceEventType to tell the two apart).
           if (msg.data?.carbonize === true && awaitingAcceptResult?.id && msg.id === awaitingAcceptResult.id) awaitingAcceptResult = null;
           if (msg.data?.carbonize === true && maybeCompleteAcceptedSession(msg)) break;
           break;
@@ -7700,17 +6878,9 @@
             showToast('Could not complete accept cleanup. Try Accept again.', 5000);
             break;
           }
-          // The optimistic teardown already released the session, so the
-          // CYCLING recovery above can no longer match; without this branch
-          // the failure fell through to the generic toast and the user had
-          // no hint their variant was never written (issue #384).
           if (awaitingAcceptResult?.id && msg.id === awaitingAcceptResult.id) {
             awaitingAcceptResult = null;
             console.error('[impeccable] Accept failed after teardown:', msg.message);
-            // Hedged on purpose: a carbonize-phase failure raises this same
-            // error after the source WAS promoted, so "was not saved" would
-            // overclaim. Normalize the server message's terminal punctuation
-            // so the two sentences don't run together.
             const acceptFailDetail = String(msg.message || 'unknown error').trim().replace(/[.!?]?$/, '.');
             showToast('Accept failed: ' + acceptFailDetail + ' The variant may not have been saved. If the change is missing, pick the element and generate again.', 8000);
             break;
@@ -7718,18 +6888,11 @@
           if (maybeCompleteSteer(msg)) break;
           console.error('[impeccable] Error:', msg.message);
           showToast('Error: ' + msg.message, 5000);
-          // An agent error reply is terminal for the session it names: tear
-          // it down exactly like 'discarded' (cleanup includes clearSession),
-          // or the durable localStorage checkpoint survives and every reload
-          // resurrects a GENERATING bar for a session the server no longer
-          // knows about (issue #362).
           if (msg.id && msg.id === currentSessionId) {
             markSessionHandled();
             cleanup();
             break;
           }
-          // A stored-but-not-current checkpoint naming the errored session
-          // (the error raced a reload) must not resurrect either.
           if (msg.id && loadSession()?.id === msg.id) clearSession();
           hideBar();
           renderEditBadge('hidden');
@@ -7742,9 +6905,8 @@
       sseRetries++;
       if (sseRetries <= SSE_MAX_RETRIES) {
         console.log('[impeccable] SSE connection lost. Retry ' + sseRetries + '/' + SSE_MAX_RETRIES + '...');
-        return; // EventSource auto-reconnects
+        return;
       }
-      // Server is gone. Clean up gracefully.
       console.log('[impeccable] Live server unreachable. Cleaning up UI.');
       evtSource.close();
       evtSource = null;
@@ -7752,7 +6914,6 @@
     };
   }
 
-  /** Server died or became unreachable. Reset UI to a clean state. */
   function handleServerLost() {
     const recoveryState = currentSessionId ? state : 'IDLE';
     if (state === 'GENERATING' || state === 'CYCLING' || state === 'SAVING') {
@@ -7765,21 +6926,12 @@
     stopScrollTracking();
     if (variantObserver) { variantObserver.disconnect(); variantObserver = null; }
     stopScrollLock();
-    // Preserve local session state on server loss. The durable journal is the
-    // source of truth, but localStorage plus the variant wrapper lets the UI
-    // resume after a helper restart or page reload instead of treating a
-    // transient disconnect as an explicit discard.
     selectedElement = null;
     selectedAction = 'impeccable';
     setLiveState(recoveryState);
     if (currentSessionId) saveSession();
   }
 
-  // Progress events must never overtake the event that CREATES their session:
-  // the Go-time checkpoint and the generate POST are concurrent fetches, and
-  // when the checkpoint lands first the server rightly refuses it as
-  // unknown_session — which must mean "foreign leftovers", not "you raced
-  // your own Go click". The gate serializes creation before progress.
   let sessionCreationGate = Promise.resolve();
 
   function sendEvent(msg, opts) {
@@ -7792,9 +6944,6 @@
       console.debug('[impeccable] Dropped optional live event:', err);
       return null;
     }
-    // Token in the query string as well as the body: the URL token is what
-    // authorizes the CORS preflight when the page runs on a non-loopback
-    // dev host (ddev, Valet), since the preflight carries no request body.
     const doSend = () => fetch('http://localhost:' + PORT + '/events?token=' + encodeURIComponent(TOKEN), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -7802,20 +6951,11 @@
     }).then(async res => {
       if (res.ok) return res;
       const body = await res.json().catch(() => ({}));
-      // The helper refused to open a session for an agent target it has
-      // already answered (another page served it after this page's lease
-      // lapsed mid-capture, or the request timed out): drop the local
-      // session and hand the surface back.
       if (body.error === 'agent_target_already_served' && msg.type === 'generate'
           && msg.id && msg.id === currentSessionId) {
         abandonSupersededGo(msg.id);
         return null;
       }
-      // The server refused to journal progress for a session it has never
-      // seen: this browser is carrying state from another project or a
-      // wiped store (two apps sharing a localhost port). Continuing to
-      // report it would freeze the picker behind a session that can never
-      // complete, so drop the local state and hand the surface back.
       if (body.error === 'unknown_session' && msg.type === 'checkpoint'
           && msg.id && msg.id === currentSessionId) {
         abandonForeignSession(msg.id);
@@ -7899,10 +7039,6 @@
     }, 120);
   }
 
-  //
-  // Event handlers
-  //
-
   function handleMouseMove(e) {
     if (pendingApplyInFlight) return;
     if (state === 'PICKING' && insertActive) {
@@ -7950,20 +7086,16 @@
       }
       return;
     }
-    // Close action picker on any outside click
     if (pickerEl?.style.display !== 'none' && !own(e.target)) {
       hideActionPicker();
     }
-    // Close Tune popover on outside click (anything outside panel + bar)
     if (tuneOpen && paramsPanelEl && !paramsPanelEl.contains(e.target) && barEl && !barEl.contains(e.target)) {
       closeTunePopover();
     }
-    // In EDITING: click outside exits the text edit flow without rebuilding configure UI first.
     if (state === 'EDITING' && !own(e.target) && selectedElement && !selectedElement.contains(e.target)) {
       cancelEditingToPicking();
       return;
     }
-    // In CONFIGURING: click outside the bar and selected element returns to PICKING.
     if (
       state === 'CONFIGURING' && !own(e.target) && selectedElement
       && !selectedElement.contains(e.target)
@@ -8015,36 +7147,19 @@
     maybeWarnConditionalAncestor(selectedElement);
   }
 
-  /**
-   * Surface a brief, non-blocking heads-up when the picked element lives
-   * inside a container whose visibility is gated by ephemeral state - modals,
-   * collapsible panels, popovers, off-screen tab panels. If HMR remounts the
-   * parent during generation (Vite Fast Refresh, SvelteKit page reload), the
-   * variants land in source but stay invisible until the user re-opens the
-   * container. Telling the user upfront is much friendlier than the silent
-   * timeout-then-toast that they'd otherwise hit.
-   *
-   * Heuristic, intentionally narrow - only fires for unambiguous cases so
-   * we don't cry wolf on every nested element.
-   */
   function maybeWarnConditionalAncestor(el) {
     let node = el?.parentElement;
     let depth = 0;
     while (node && depth < 12) {
-      // 1. Active dialog / modal
       if (node.getAttribute && node.getAttribute('role') === 'dialog'
           && node.getAttribute('aria-modal') === 'true') {
         showToast('Heads up: this element lives inside a dialog. If state resets during generation, you may need to re-open it.', 6000);
         return;
       }
-      // 2. Common Radix / shadcn / headless-ui open-state attribute
       if (node.dataset && node.dataset.state === 'open') {
         showToast('Heads up: this element lives inside an open panel. If state resets during generation, you may need to re-open it.', 6000);
         return;
       }
-      // 3. Tab panel - only meaningful when the page also shows ANOTHER
-      // tab as selected. A single tabpanel with no tablist is just a static
-      // section in disguise and isn't conditional.
       if (node.getAttribute && node.getAttribute('role') === 'tabpanel') {
         const list = document.querySelector('[role="tablist"]');
         if (list) {
@@ -8055,7 +7170,6 @@
           }
         }
       }
-      // 4. Collapsible: aria-expanded sibling. Look for the trigger button.
       if (node.id) {
         const trigger = document.querySelector(`[aria-controls="${CSS.escape(node.id)}"][aria-expanded="true"]`);
         if (trigger) {
@@ -8068,17 +7182,6 @@
     }
   }
 
-  // Fire a lightweight prefetch event the first time the user selects an
-  // element on a given route. The agent uses this to Read the underlying file
-  // into context before Go is hit, shaving the read off the critical path.
-  // Dedupe per session by pathname - clicking around on the same page doesn't
-  // re-fire.
-  //
-  // DISABLED: quick-Go workflows pay an extra harness round trip because
-  // prefetch + generate arrive as two events instead of one. Re-enable with
-  // a browser-side debounce (~800-1000ms, cancelled on Go) if we want to
-  // resurrect this. Server validator and skill dispatch remain in place so
-  // flipping this flag is the only change needed.
   const PREFETCH_ENABLED = false;
   const prefetchedPaths = new Set();
   function maybePrefetchPage() {
@@ -8100,7 +7203,6 @@
   }
 
   function handleKeyDown(e) {
-    // When the annotation input is focused, let it handle its own keys.
     if (annotEditing && annotEditing.input && e.target === annotEditing.input) return;
     const deepActive = activeElementDeep();
     if (
@@ -8114,18 +7216,12 @@
     if (isPageEditableElement(deepActive) && !isInlineEditActive(deepActive)) {
       return;
     }
-    // While a contenteditable text-leaf is focused, let the browser handle
-    // all keys except Escape. Escape cancels the current edit (restores
-    // original text) and blurs without saving, staying in CONFIGURING.
     if (e.target.isContentEditable && isInlineEditActive(e.target)) {
       if (e.key !== 'Escape') return;
       e.preventDefault();
       e.stopPropagation();
       const original = e.target.dataset.impeccableOriginalText;
       if (original !== undefined) e.target.textContent = original;
-      // Programmatic textContent doesn't fire the 'input' event, so the draft
-      // map would otherwise hold the pre-cancel value and Apply would commit
-      // changes the user explicitly undid.
       inlineEditDrafts.delete(e.target);
       e.target.blur();
       return;
@@ -8153,7 +7249,7 @@
         return;
       }
       if (state === 'CYCLING') { handleDiscard(); return; }
-      if (state === 'SAVING' || state === 'CONFIRMED') return; // don't interrupt
+      if (state === 'SAVING' || state === 'CONFIRMED') return;
       if (state === 'PICKING') {
         if (insertActive) toggleInsert();
         else if (pickActive) togglePick();
@@ -8162,7 +7258,6 @@
       }
     }
 
-    // Arrow/Enter nav works in PICKING (hover) and CONFIGURING (selected, input empty)
     var navEl = (state === 'PICKING') ? hoveredElement : (state === 'CONFIGURING') ? selectedElement : null;
     if (navEl && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || (e.key === 'Enter' && state === 'PICKING'))) {
       let next = null;
@@ -8195,7 +7290,6 @@
         if (state === 'PICKING') {
           hoveredElement = next;
         } else {
-          // CONFIGURING: re-select the new element
           selectedElement = next;
           clearAnnotations();
           showAnnotOverlay(next);
@@ -8224,19 +7318,13 @@
     const input = uiGetById(PREFIX + '-input');
     const prompt = input ? input.value.trim() : '';
 
-    // Commit any pending pin edit BEFORE we snapshot annotations.
     if (annotEditing) finalizeEditingPin();
-    // Go captures page content, not manual-edit runtime state.
     disableInlineEdit();
     stripManualEditRuntimeState(selectedElement);
 
-    // A new cycle publishes new modules, so the previous cycle's mount failure
-    // is about files that no longer matter.
     clearMountErrorCard();
     lastReportedMountFailure = null;
     pendingAcceptedSession = null;
-    // A new session supersedes any accept still awaiting its result; a late
-    // failure toast for the previous session would only mislead here.
     awaitingAcceptResult = null;
     currentSessionId = id8();
     expectedVariants = selectedCount;
@@ -8248,10 +7336,6 @@
     parameterReadyAnnouncedSession = null;
     resetSessionFileMeta();
 
-    // Flip to GENERATING immediately so the bar morphs without waiting on
-    // capture + upload. The event is emitted from captureAndEmit() once the
-    // screenshot is uploaded (or capture fails - we still emit, just without
-    // screenshotPath).
     const elForCapture = selectedElement;
     pickedAnchorSnapshot = buildPickedAnchorSnapshot(elForCapture);
     const captureRect = elForCapture.getBoundingClientRect();
@@ -8271,9 +7355,6 @@
     if (snapshot.comments.length > 0) basePayload.comments = snapshot.comments;
     if (snapshot.strokes.length > 0) basePayload.strokes = snapshot.strokes;
     if (agentTargetForGo) {
-      // An agent-initiated Go names the target it serves (see
-      // actOnAgentTarget): the helper resolves that request from this event
-      // as well as from the overlay's own result post.
       basePayload.agentTarget = {
         targetId: agentTargetForGo.targetId,
         clientId: AGENT_TARGET_CLIENT_ID,
@@ -8289,15 +7370,10 @@
       agentTargetForGo = null;
     }
 
-    // Hide the interactive overlay so it doesn't linger during generation.
     hideAnnotOverlay();
     clearAnnotations();
 
     setLiveState('GENERATING');
-    // Disable the Edit badge: starting a manual text edit mid-generation would
-    // conflict with the variant wrap that's about to land in the same DOM
-    // region. Only swap if the badge was visible - picked elements with no
-    // text rows have it hidden already.
     if (editBadgeEl && editBadgeEl.style.display !== 'none') renderEditBadge('idle-disabled');
     showBar('generating');
     saveSession();
@@ -8334,13 +7410,9 @@
     if (!canCreateInsert({ prompt, comments: snapshot.comments, strokes: snapshot.strokes })) return;
 
     stopVoice({ suppressSubmit: true });
-    // A new cycle publishes new modules, so the previous cycle's mount failure
-    // is about files that no longer matter.
     clearMountErrorCard();
     lastReportedMountFailure = null;
     pendingAcceptedSession = null;
-    // A new session supersedes any accept still awaiting its result; a late
-    // failure toast for the previous session would only mislead here.
     awaitingAcceptResult = null;
     currentSessionId = id8();
     expectedVariants = selectedCount;
@@ -8390,10 +7462,6 @@
     captureAndEmit(elForCapture, basePayload, snapshot, captureRect);
   }
 
-  //
-  // Screenshot capture + upload
-  //
-
   let msLoadPromise = null;
   function loadModernScreenshot() {
     if (window.modernScreenshot) return Promise.resolve(window.modernScreenshot);
@@ -8408,15 +7476,6 @@
     return msLoadPromise;
   }
 
-  // Collect @font-face rules from every stylesheet on the page. Cross-origin
-  // sheets (Google Fonts, Typekit, etc.) throw SecurityError on .cssRules
-  // access, so modern-screenshot can't embed them on its own - the resulting
-  // SVG falls back to system fonts and text re-wraps + renders with different
-  // weight. We fetch the raw CSS text (CORS-permitted for these providers),
-  // extract @font-face blocks, inline the referenced font files as base64
-  // data URIs (SVGs rasterized via canvas can't fetch external resources,
-  // so URLs inside the SVG silently fail without this), and pass the result
-  // to modern-screenshot as font.cssText.
   const FONT_EXT_RE = /\.(woff2?|ttf|otf|eot)(\?.*)?$/i;
   const FONT_MIME = {
     woff2: 'font/woff2', woff: 'font/woff', ttf: 'font/ttf', otf: 'font/otf', eot: 'application/vnd.ms-fontobject',
@@ -8446,7 +7505,7 @@
         const ext = url.toLowerCase().match(FONT_EXT_RE)?.[1] || 'woff2';
         const mime = FONT_MIME[ext] || 'application/octet-stream';
         map.set(url, 'data:' + mime + ';base64,' + bufferToBase64(buf));
-      } catch { /* skip; fall through to URL */ }
+      } catch {}
     }));
     return cssText.replace(urlRe, (orig, q, url) => {
       const data = map.get(url);
@@ -8472,15 +7531,13 @@
           const text = await res.text();
           let m2;
           while ((m2 = fontFaceRe.exec(text))) chunks.push(m2[0]);
-        } catch { /* ignore; capture is best-effort */ }
+        } catch {}
       }
     }
     if (chunks.length === 0) return '';
     return inlineFontUrls(chunks.join('\n'));
   }
 
-  // True if `s` is a computed color string that renders as nothing
-  // (explicit `transparent`, or `rgba(...)` with alpha 0).
   function isTransparentColor(s) {
     if (!s) return true;
     if (s === 'transparent') return true;
@@ -8491,12 +7548,6 @@
     return false;
   }
 
-  // modern-screenshot force-sets `background-color: X !important` on the
-  // cloned root whenever `backgroundColor` is passed, clobbering the
-  // element's own background. So we only pass it when the element is
-  // genuinely transparent (no own color, no own image) - in that case
-  // we resolve up the DOM to the nearest opaque ancestor so the capture
-  // sits on the page's real background instead of rendering black.
   function resolveCanvasBackground(el) {
     const own = getComputedStyle(el);
     if (!isTransparentColor(own.backgroundColor)) return null;
@@ -8507,14 +7558,6 @@
       if (!isTransparentColor(cs.backgroundColor)) return cs.backgroundColor;
       node = node.parentElement;
     }
-    // The walk already passed through <body> and <html>; if they had been
-    // opaque we would have returned. Falling through with the previous
-    // `getComputedStyle(body).backgroundColor || …` chain is a trap: that
-    // call returns the literal string `"rgba(0, 0, 0, 0)"` for a page that
-    // never set its own bg, which is truthy and short-circuits the chain to
-    // transparent-black - modern-screenshot then renders the capture on a
-    // black canvas and the shader overlay flashes solid black during load.
-    // The browser canvas defaults to white, so we do too.
     return '#ffffff';
   }
 
@@ -8562,8 +7605,6 @@
   }
 
   function shouldUseAncestorCropShaderProxy(el) {
-    // TODO: Enable this proxy for React/Vue/etc. adapters once their live
-    // preview mounts are covered by the same shader regression checks.
     const adapter = String(window.__IMPECCABLE_LIVE_ADAPTER__ || '').toLowerCase();
     if (adapter === 'svelte' || adapter === 'sveltekit') return true;
     if (isFrameworkComponentPreviewMode(currentPreviewMode) || svelteComponentSession) return true;
@@ -8596,11 +7637,6 @@
     return null;
   }
 
-  // Capture the element (with current annotations baked in) and return
-  // { blob, paper }: the PNG Blob, plus the representative backdrop tone for the
-  // shader's halftone ground (so capture, upload, and shader all agree on what
-  // sits behind the element). Shared between the Go flow (uploads the blob) and
-  // the shader-resume path.
   async function captureElementFromRenderedAncestor(ms, el, opts) {
     const doc = el.ownerDocument || document;
     const captureRoot = findShaderProxyCaptureRoot(el);
@@ -8654,18 +7690,10 @@
         }
       }
       const bg = resolveCanvasBackground(el);
-      // Fast path: the element paints its own background, or an opaque ancestor
-      // color was found. modern-screenshot bakes that color; paper matches it.
       if (bg !== '#ffffff') {
         const blob = await ms.domToBlob(el, { ...opts, ...(bg ? { backgroundColor: bg } : {}) });
         return { blob, paper: bg ? cssColorToRgb01(bg) : resolvePaperRgb(el) };
       }
-      // Transparent up to the root. The visible backdrop may still come from an
-      // ancestor's background-image or a covering positioned layer (e.g. a hero
-      // art div) that the color walk can't see. Capture that ancestor and crop
-      // to the element so the real backdrop is embedded - correct for both the
-      // shader and the screenshot sent to the model. Fall back to white only
-      // when nothing is actually painted behind the element.
       const backdrop = findBackdropAncestor(el);
       if (!backdrop) {
         const blob = await ms.domToBlob(el, { ...opts, backgroundColor: '#ffffff' });
@@ -8682,8 +7710,6 @@
       crop.height = Math.max(1, Math.round(sh));
       const cctx = crop.getContext('2d', { willReadFrequently: true });
       cctx.drawImage(ancestorCanvas, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
-      // Ground = backdrop sampled around the element, falling back to the crop
-      // mean only if the surround is fully transparent.
       const actx = ancestorCanvas.getContext('2d', { willReadFrequently: true });
       const paper = sampleSurroundingRgb(actx, sx, sy, sw, sh, ancestorCanvas.width, ancestorCanvas.height)
         || averageRgb01(cctx, crop.width, crop.height);
@@ -8698,10 +7724,6 @@
   async function captureAndEmit(el, basePayload, snapshot, rect) {
     const hasAnnotations = snapshot && (snapshot.comments.length > 0 || snapshot.strokes.length > 0);
 
-    // Plain requests do not send a screenshot to the agent, so capture is
-    // presentation-only. Wait only for the helper to accept the event before
-    // starting CPU-heavy capture; this yields the browser task and prevents
-    // rasterization from delaying the fetch itself.
     if (!hasAnnotations) {
       basePayload.clientSentAt = Date.now();
       const created = await sendEvent(basePayload);
@@ -8716,15 +7738,9 @@
     } catch (err) {
       console.warn('[impeccable] capture failed, proceeding without screenshot:', err);
     }
-    // Light up the shader overlay the moment capture is ready - no reason to
-    // wait for the upload to complete before the user sees something alive.
     if (blob && state === 'GENERATING') {
       showShaderOverlay(el, blob, rect, paper);
     }
-    // Only upload + forward the screenshot when annotations (comments/strokes)
-    // are present. Without annotations the image is pure visual anchoring -
-    // it biases the model toward the current rendering and works against the
-    // three-distinct-directions brief.
     if (blob && hasAnnotations) {
       try {
         const uploadRes = await fetch(
@@ -8742,24 +7758,12 @@
         console.warn('[impeccable] annotation upload failed:', err);
       }
     }
-    // Annotated requests must wait for capture + upload because the screenshot
-    // is semantic input. Plain requests were already dispatched above.
     if (hasAnnotations) {
       basePayload.clientSentAt = Date.now();
       const created = await sendEvent(screenshotPath ? { ...basePayload, screenshotPath } : basePayload);
-      // Capture/upload can take seconds. Progress before this acknowledgment
-      // refers to an unknown session and would clear our own active work.
       if (created?.ok && currentSessionId === basePayload.id) sendCheckpoint('generate_started');
     }
   }
-
-  //
-  // Shader overlay - renders the captured screenshot as a WebGL texture and
-  // runs an editorial "ink-wash" fragment shader over it during generation.
-  // A single rolling band sweeps top-to-bottom, desaturating + tinting kinpaku
-  // and leaving a soft trail. Makes the wait feel like a letterpress scan
-  // instead of a dead spinner.
-  //
 
   const SHADER_VS = `attribute vec2 a_position;
 attribute vec2 a_uv;
@@ -8831,41 +7835,18 @@ void main() {
   gl_FragColor = vec4(mix(ground, u_accent, dotAmt), tex.a);
 }`;
 
-  // Kinpaku gold converted to approximate sRGB 0-1 (matches oklch(84% 0.19 80.46))
   const SHADER_ACCENT = [1.0, 0.78, 0.31];
-  // Fallback ground when an element and all its ancestors are transparent -
-  // matches the original off-white risograph paper.
   const SHADER_PAPER_FALLBACK = [0.975, 0.965, 0.955];
-  let shaderState = null; // { canvas, gl, program, texture, rafId, startTime }
-  // showShaderOverlay is async: it appends its canvas, then awaits
-  // createImageBitmap and the GL setup before it publishes shaderState. A
-  // teardown that landed inside that window found shaderState still null,
-  // returned, and then watched the construction publish itself over a session
-  // that had already left GENERATING, with no teardown left to run. That is
-  // the generating loader frozen over a page that already cycles (issue #719).
-  // Every teardown bumps this epoch; a construction abandons its own canvas as
-  // soon as it sees the epoch move.
+  let shaderState = null;
   let shaderEpoch = 0;
 
-  // The element's effective background tone, used as the uniform halftone
-  // ground so content dissolves into dots over it. Unlike resolveCanvasBackground
-  // (which returns null when the element paints its own bg), this always returns
-  // a usable color: the element's own background if any, else the nearest opaque
-  // ancestor, else the paper fallback.
-  // Rasterize any CSS color (oklch, color(), named, hex, rgb) through a 1x1
-  // canvas and read back the sRGB pixel. String-parsing computed colors is a
-  // trap: Chrome returns backgroundColor as oklch()/color() for oklch inputs,
-  // which a hex/rgb regex misses - every site token would fall back to white.
   let colorParseCtx = null;
   function cssColorToRgb01(str) {
     if (!colorParseCtx) {
       colorParseCtx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
     }
-    // Clear first: the ctx is cached across calls, so a semi-transparent color
-    // would otherwise blend (source-over) with the previous call's leftover
-    // pixel, making the result depend on call history.
     colorParseCtx.clearRect(0, 0, 1, 1);
-    colorParseCtx.fillStyle = '#000'; // invalid input leaves this default
+    colorParseCtx.fillStyle = '#000';
     colorParseCtx.fillStyle = str;
     colorParseCtx.fillRect(0, 0, 1, 1);
     const d = colorParseCtx.getImageData(0, 0, 1, 1).data;
@@ -8881,13 +7862,6 @@ void main() {
     return SHADER_PAPER_FALLBACK;
   }
 
-  // When an element is transparent up to the root, its visible backdrop can
-  // still come from an ancestor's background-image or a covering positioned
-  // layer that is a *child* of an ancestor (e.g. a hero's absolute art div) -
-  // neither of which the ancestor background-COLOR walk can see. Return the
-  // nearest such ancestor so we can capture it and crop, embedding the real
-  // backdrop. Returns null when nothing is actually painted behind the element
-  // (genuinely transparent → white is correct).
   function paintsBackdrop(node) {
     const s = getComputedStyle(node);
     if (s.backgroundImage && s.backgroundImage !== 'none') return true;
@@ -8912,19 +7886,13 @@ void main() {
     return null;
   }
 
-  // Mean sRGB (0-1) of a canvas region, used as the halftone ground when the
-  // backdrop was captured from an ancestor rather than read from a CSS color.
   function averageRgb01(ctx, w, h) {
     const data = ctx.getImageData(0, 0, w, h).data;
     let r = 0, g = 0, b = 0, n = 0;
-    // Stride a few pixels for speed; exact average is unnecessary for a ground.
     for (let i = 0; i < data.length; i += 16) { r += data[i]; g += data[i + 1]; b += data[i + 2]; n++; }
     return n ? [r / n / 255, g / n / 255, b / n / 255] : SHADER_PAPER_FALLBACK;
   }
 
-  // Pick the most common visible color cluster from a crop. A straight average
-  // gets pulled by text and icons; the dominant bucket usually represents the
-  // surface the shader should dissolve into.
   function dominantRgb01(ctx, w, h) {
     const data = ctx.getImageData(0, 0, w, h).data;
     const stride = Math.max(1, Math.floor((w * h) / 6000));
@@ -8947,10 +7915,6 @@ void main() {
     return best ? [best.r / best.count / 255, best.g / best.count / 255, best.b / best.count / 255] : null;
   }
 
-  // Average the backdrop sampled just OUTSIDE an element's rect within a larger
-  // canvas. The ground tone for the dissolve must be the real backdrop, not the
-  // mean of the element's own crop - averaging the crop folds in the element's
-  // content (e.g. bright heading text), pulling the ground toward muddy gray.
   function sampleSurroundingRgb(ctx, sx, sy, sw, sh, W, H) {
     const pad = Math.max(2, Math.round(Math.min(sw, sh) * 0.12));
     const fx = [0.2, 0.5, 0.8].map((f) => sx + sw * f);
@@ -8963,7 +7927,7 @@ void main() {
       const cx = Math.max(0, Math.min(W - 1, Math.round(px)));
       const cy = Math.max(0, Math.min(H - 1, Math.round(py)));
       const d = ctx.getImageData(cx, cy, 1, 1).data;
-      if (d[3] === 0) continue; // outside the ancestor's paint
+      if (d[3] === 0) continue;
       r += d[0]; g += d[1]; b += d[2]; n++;
     }
     return n ? [r / n / 255, g / n / 255, b / n / 255] : null;
@@ -8992,16 +7956,12 @@ void main() {
     });
   }
 
-  /** Drop a shader node no shaderState owns (an abandoned construction). */
   function removeStrayShaderNode() {
     const stray = uiGetById(PREFIX + '-shader');
     if (stray) stray.remove();
   }
 
   function hideShaderOverlay() {
-    // Bump first, unconditionally: this is what tells an in-flight
-    // showShaderOverlay to abandon itself rather than publish over a session
-    // that has already moved on.
     shaderEpoch += 1;
     if (!shaderState) {
       removeStrayShaderNode();
@@ -9021,10 +7981,6 @@ void main() {
     const objectUrl = URL.createObjectURL(blob);
     const fallback = document.createElement('div');
     fallback.id = PREFIX + '-shader';
-    // Copy positioning via cssText. Object.assign across CSSStyleDeclaration
-    // throws in modern Chromium because the source's indexed properties
-    // (style[0], [1], ...) are read-only and the engine forbids writing
-    // them on the destination.
     fallback.style.cssText = canvas.style.cssText;
     fallback.style.backgroundImage = 'url("' + objectUrl + '")';
     fallback.style.backgroundSize = '100% 100%';
@@ -9038,8 +7994,6 @@ void main() {
   async function showShaderOverlay(el, blob, rect, paper) {
     hideShaderOverlay();
     if (!blob || !el) return;
-    // hideShaderOverlay just bumped the epoch, so this run owns it until the
-    // next teardown. Every step past an await re-checks before it publishes.
     const epoch = shaderEpoch;
     const abandoned = (node, gl) => {
       if (epoch === shaderEpoch) return false;
@@ -9068,8 +8022,6 @@ void main() {
     const gl = canvas.getContext('webgl', { premultipliedAlpha: false, preserveDrawingBuffer: false })
             || canvas.getContext('experimental-webgl');
     if (!gl) {
-      // WebGL unavailable: use the captured bitmap as a background overlay so
-      // the user still sees something meaningful during generation.
       if (abandoned(canvas, null)) return;
       showShaderBitmapFallback(canvas, blob);
       return;
@@ -9086,7 +8038,6 @@ void main() {
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
         throw new Error('program link failed: ' + gl.getProgramInfoLog(program));
       }
-      // Full-screen quad
       const buf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, buf);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
@@ -9109,7 +8060,6 @@ void main() {
       return;
     }
 
-    // Upload the screenshot as a texture
     if (abandoned(canvas, gl)) return;
     let bitmap;
     try {
@@ -9169,7 +8119,7 @@ void main() {
     if (pendingApplyInFlight) { showManualApplyBusyToast(); return; }
     if (pendingAcceptedSession || state === 'SAVING') return;
     if (variantSelectionPromise) {
-      try { await variantSelectionPromise; } catch { /* failed selection falls back below */ }
+      try { await variantSelectionPromise; } catch {}
     }
     const domVisibleVariant = readVisibleVariantFromDOM(currentSessionId);
     if (domVisibleVariant > 0) visibleVariant = domVisibleVariant;
@@ -9185,12 +8135,6 @@ void main() {
     if (Object.keys(paramsCurrentValues).length > 0) {
       acceptPayload.paramValues = { ...paramsCurrentValues };
     }
-    // The accepted variant is already the only visible child of the wrapper
-    // (all other variants are display:none). HMR from the source rewrite will
-    // replace the wrapper imminently. Don't eagerly replaceChild here - React
-    // reconciliation races with our mutation and throws NotFoundError in Next
-    // 16 / Turbopack. Schedule a fallback that runs the manual swap only if
-    // HMR hasn't cleaned up by then (keeps static-server flows working).
     const acceptedSessionId = currentSessionId;
     const acceptedVariant = visibleVariant;
     const acceptedIsSvelteComponent = svelteComponentSession?.sessionId === acceptedSessionId
@@ -9212,9 +8156,6 @@ void main() {
       .then(() => {
         const pending = pendingAcceptedSession;
         if (!pending || pending.id !== acceptedSessionId) return;
-        // POST /events returns only after the accept intent is durable and the
-        // generation epoch is fenced. Source promotion/carbonize can finish in
-        // the background; the foreground picker is free immediately.
         markSessionHandled();
         setLiveState('CONFIRMED');
         document.documentElement.dataset.impeccableAcceptToPickingMs = String(Date.now() - acceptPayload.clientSentAt);
@@ -9253,19 +8194,11 @@ void main() {
     const recoveryRevision = liveInteractionRevision;
     queueMicrotask(function() {
       if (pendingAcceptedSession?.id !== accepted?.id) return;
-      // Svelte previews live in an adapter-owned mount rather than in source
-      // wrapper markup. Promote the mounted variant before releasing the
-      // session so the old adapter instance cannot linger behind the next
-      // Pick → Go loop while carbonize finishes in the background.
       if (accepted?.isSvelteComponent) {
         commitAcceptedSvelteComponentToDom(accepted.id);
       }
       cleanupAcceptedSession();
     });
-    // Let React/Vue/Svelte own the HMR reconciliation. Mutating their DOM in
-    // the same turn as the source update causes removeChild/NotFoundError
-    // races. Static servers still need a fallback, but it must not keep Live
-    // in SAVING or block the user's next pick.
     if (!accepted?.isSvelteComponent) {
       watchForHandledRuntimeWrapper(accepted?.id, recoveryRevision);
       setTimeout(function() {
@@ -9304,18 +8237,12 @@ void main() {
   }
 
   function ensureAcceptedDomClean(pending, recoveryRevision) {
-    // Background cleanup for an accepted session must never mutate or reload
-    // a newer comparison the user has already started.
     if (deferredRecoverySuperseded(pending?.id, recoveryRevision)) return;
     if (acceptedDomAlreadyClean(pending)) return;
     const sessionId = pending?.id;
     const variantId = pending?.variant;
     const wrappers = findAcceptedRuntimeWrappers(sessionId);
     if (hasFrameworkHmrOwnership(wrappers[0] || pending?.parentElement)) {
-      // Vite can coalesce rapid scaffold/carbonize writes and leave the last
-      // framework-owned preview tree mounted even though source is clean. Give
-      // HMR another grace window, then reload from clean source rather than
-      // violating reconciler ownership with a manual DOM mutation.
       setTimeout(function() {
         if (deferredRecoverySuperseded(pending?.id, recoveryRevision)) return;
         if (!acceptedDomAlreadyClean(pending)) location.reload();
@@ -9437,11 +8364,6 @@ void main() {
       .catch(() => showToast('Could not confirm discard with the live server. Session kept for recovery.', 5000));
   }
 
-  //
-  // Session persistence via live-browser-session.js
-  //
-  // Survives page reloads, browser close/reopen, HMR, and accidental refreshes.
-
   function normalizeSessionPath(value) {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
@@ -9527,18 +8449,6 @@ void main() {
     return Math.floor(num);
   }
 
-  /**
-   * A durable server session this page can adopt when the browser has no local
-   * record of it. Requires an explicit pageUrl match: a summary with no page is
-   * not evidence that it belongs to THIS page, and adopting it would hijack an
-   * unrelated route.
-   */
-  // Phases in which the user is (or should be) comparing variants. Only these
-  // are adoptable by a browser with no local record. Steer and manual-edit
-  // sessions have no wrapper to restore, and accept/carbonize phases are
-  // agent-side work: a reload mid-carbonize must not resurrect the bar over a
-  // page whose comparison is already decided (a slow-CI reload hit exactly
-  // that window and left the bar stranded after accept).
   const ADOPTABLE_SESSION_PHASES = new Set([
     'generate_requested', 'variants_ready', 'generating', 'cycling',
   ]);
@@ -9557,9 +8467,6 @@ void main() {
     )) || null;
   }
 
-  // Shape a server summary like a saved local session so one restore path
-  // serves both. The server has no browser state machine, so an adopted session
-  // always re-enters GENERATING and lets the injection settle the final state.
   function serverSessionAsSavedShape(session) {
     return {
       id: session.id,
@@ -9576,16 +8483,8 @@ void main() {
   }
 
   function restoreSessionWithoutWrapper(reason, activeSessions) {
-    // The session cache is per origin, so a tab on another page of the same
-    // app sees this page's session too. Only the page that saved it may
-    // resume it: the server-adoption branch below already applies the same
-    // check, and a tab on another page has nothing to render for it.
     const cachedRaw = loadSession();
     const cached = cachedRaw?.id && !pageMatchesCurrent(cachedRaw.pageUrl) ? null : cachedRaw;
-    // localStorage is a cache, not a gate. A cleared tab, a second browser
-    // profile, or a teardown that dropped local state all leave the durable
-    // server session as the only record of work in progress; adopt it instead
-    // of stranding a session the server still considers live.
     const adopted = cached?.id ? null : findAdoptableServerSession(activeSessions);
     const saved = cached?.id ? cached : (adopted ? serverSessionAsSavedShape(adopted) : null);
     if (!saved?.id || isSessionHandled(saved.id)) return false;
@@ -9624,11 +8523,6 @@ void main() {
       ? currentPreviewFile
       : (currentSourceFile || currentPreviewFile);
     if (restoreFile) {
-      // A restored CYCLING session promises variants already written into
-      // source; if they are not there (after retries), the session is an
-      // orphan and must self-discard instead of freezing the picker (#439).
-      // GENERATING restores make no such promise: deferred-wrapper flows
-      // legitimately have no wrapper in source until the agent's write lands.
       injectVariantsFromSource(restoreFile, currentSessionId, {
         orphanDiscard: savedState === 'CYCLING' && !isFrameworkComponentPreviewMode(currentPreviewMode),
       });
@@ -9645,15 +8539,6 @@ void main() {
     return restoreSessionWithoutWrapper(reason || 'sse_connected', activeSessions);
   }
 
-  // Self-heal on SSE (re)connect. The preflight scaffold write triggers a
-  // framework full-reload (Astro reloads pages for any .astro edit); if the
-  // agent's variant write + `done` broadcast land while this page is
-  // mid-reload, both the done SSE and the second HMR reload are missed and
-  // the resumed page would wait in GENERATING at 0/N forever. The server's
-  // session summary carries the durable generationCompletedAt marker, so on
-  // every connect compare it against our own progress and pull the finished
-  // variants from source when behind. Mirrors the `done` handler's source
-  // fallback, including its give-HMR-the-first-chance settle delay.
   function recoverMissedGenerationCompletion(activeSessions) {
     if (!currentSessionId || state !== 'GENERATING') return;
     if (!Array.isArray(activeSessions)) return;
@@ -9677,8 +8562,6 @@ void main() {
 
   function saveSession() {
     if (!currentSessionId) return;
-    // NOTE: scrollY is stored under a separate key (writeScrollY). Storing
-    // it here would overwrite the Go-time value every time state changes.
     sessionState.saveSession({
       id: currentSessionId,
       appRoot: APP_ROOT || undefined,
@@ -9705,10 +8588,6 @@ void main() {
 
   function loadSession() {
     const saved = sessionState.loadSession();
-    // localStorage is per-origin, and two projects routinely reuse the same
-    // localhost port. A saved session stamped with another project's appRoot
-    // is that project's leftover, never a session this server can complete;
-    // resuming it freezes the picker behind an unfinishable banner.
     if (saved?.appRoot && APP_ROOT && saved.appRoot !== APP_ROOT) {
       console.warn('[impeccable] Ignoring saved live session from another project (' + saved.appRoot + ').');
       sessionState.clearSession();
@@ -9721,9 +8600,6 @@ void main() {
     sessionState.clearSession();
   }
 
-  /** Mark session as handled (accepted/discarded). The agent will clean up
-   *  the source, but until it does the wrapper is still in the HTML. This
-   *  prevents resumeSession from picking it up again after reload. */
   function markSessionHandled() {
     if (!currentSessionId) return;
     sessionState.markHandled(currentSessionId);
@@ -9747,15 +8623,6 @@ void main() {
     if (svelteComponentSession?.sessionId === cleanupSessionId) {
       teardownSvelteComponentSession(true);
     } else if (cleanupSessionId) {
-      // Switch visibility immediately without structurally mutating the DOM.
-      // HMR from the agent's source rewrite may still be on its way,
-      // and a manual replaceChild under React causes NotFoundError when the
-      // reconciler later tries to remove a wrapper we already removed.
-      // Schedule a 2s fallback that does the manual swap only if HMR hasn't
-      // replaced the wrapper by then (keeps static-server / no-HMR flows alive).
-      // Every match, not the first: a target inside a `.map()` renders one
-      // wrapper per item, and hiding only one leaves the rest of the
-      // discarded variants on screen.
       const discardWrappers = discardedWrappers(cleanupSessionId);
       if (discardWrappers.length > 0) {
         if (restoreOriginal) showOriginalDuringDiscard(cleanupSessionId);
@@ -9772,8 +8639,6 @@ void main() {
           removeDiscardStateStylesheet(cleanupSessionId);
           return;
         }
-        // Duplicates all render from one source element, so HMR ownership is
-        // uniform across them; the first is a fair witness for the set.
         const lateWrapper = lateWrappers[0];
         if (recoverySuperseded) {
           if (hasFrameworkHmrOwnership(lateWrapper)) {
@@ -9784,9 +8649,6 @@ void main() {
           return;
         }
         if (hasFrameworkHmrOwnership(lateWrapper)) {
-          // As on accept, never restructure framework-owned DOM. If HMR missed
-          // the final source rewrite, reload once after a grace window so the
-          // discarded source becomes authoritative without a reconciler race.
           setTimeout(function() {
             const staleWrappers = discardedWrappers(cleanupSessionId);
             if (deferredRecoverySuperseded(cleanupSessionId, cleanupRevision)) {
@@ -9795,8 +8657,6 @@ void main() {
               return;
             }
             removeDiscardStateStylesheet(cleanupSessionId);
-            // A reload restores every wrapper's original at once, so there is
-            // nothing per-wrapper to do here.
             if (staleWrappers.length > 0) location.reload();
           }, 2000);
           return;
@@ -9828,10 +8688,6 @@ void main() {
     setLiveState('PICKING');
   }
 
-  //
-  // Toast
-  //
-
   function dismissToast() {
     if (!toastEl) return;
     toastEl.remove();
@@ -9840,10 +8696,6 @@ void main() {
 
   function showToast(message, duration) {
     dismissToast();
-    // Stack the toast above the global bar (which sits at bottom:14px) so
-    // the two never overlap. Read the bar's actual rect - its height varies
-    // with hover-expanded labels - and fall back to a sensible default
-    // when the bar isn't mounted yet.
     const barRect = globalBarEl?.getBoundingClientRect();
     const barTopFromBottom = barRect && barRect.height > 0
       ? Math.max(16, window.innerHeight - barRect.top + 12)
@@ -9879,13 +8731,6 @@ void main() {
     }, duration);
   }
 
-  //
-  // Init
-  //
-
-  // Resume an active variant session after HMR/page reload.
-  // If a [data-impeccable-variants] wrapper exists in the DOM, the agent wrote
-  // variants before HMR fired. Pick up where we left off.
   function handledWrapperReloadKey(sessionId) {
     return HANDLED_WRAPPER_RELOAD_KEY + ':' + sessionId;
   }
@@ -9923,11 +8768,6 @@ void main() {
     } catch {}
     handledRuntimeWrapperReloadSessions.add(sessionId);
 
-    // A framework refresh can replace the variants tree with an intermediate
-    // carbonize tree and reload the page, cancelling the original accept timer.
-    // Let the file-side cleanup settle, then reload once from authoritative
-    // source. The sessionStorage stamp prevents a stale dev-server response
-    // from turning this recovery into a reload loop.
     setTimeout(function() {
       if (deferredRecoverySuperseded(sessionId, recoveryRevision)) {
         clearHandledWrapperReloadStamp(sessionId);
@@ -9961,10 +8801,6 @@ void main() {
       if (wrapper) scheduleHandledRuntimeWrapperReload(wrapper, recoveryRevision);
     };
 
-    // Vite can briefly render the clean accepted tree, then apply a delayed
-    // carbonize refresh after the one-shot accept fallback has already passed.
-    // Keep a bounded scout alive through that refresh window so a late stale
-    // framework tree still reloads from the now-authoritative source.
     const observer = new MutationObserver(findHandledWrapper);
     observer.observe(document.body, { childList: true, subtree: true });
     const timer = setTimeout(function() {
@@ -9981,10 +8817,6 @@ void main() {
       || runtimeWrapper?.dataset?.impeccableCarbonize;
     if (!handledSessionId || !isSessionHandled(handledSessionId)) return false;
 
-    // Accept releases the picker before carbonize finishes, so a replacement
-    // generation can already be durable while the prior handled wrapper is
-    // still mounted. Restore that newer session before the stale-wrapper
-    // recovery path gets a chance to reload or consume its retry budget.
     const saved = loadSession();
     if (!saved?.id || saved.id === handledSessionId || isSessionHandled(saved.id)) return false;
     if (currentSessionId === saved.id) return true;
@@ -9992,10 +8824,6 @@ void main() {
   }
 
   function resumeSession(recoveryRevision = liveInteractionRevision, opts = {}) {
-    // Which path resumed matters in the journal: an init resume is a fresh
-    // page load, the deferred-wrapper scout is a mid-page-load arrival. Both
-    // used to log the same `browser_resumed`, which made issue #719 take a
-    // DOM reconstruction to diagnose.
     const resumeReason = opts.reason || 'browser_resumed';
     const wrapper = findAnyVariantsWrapper();
     const runtimeWrapper = wrapper || document.querySelector('[data-impeccable-carbonize]');
@@ -10004,23 +8832,13 @@ void main() {
     if (!wrapper) {
       if (restoreSessionWithoutWrapper('browser_resumed_without_wrapper')) return true;
       clearSession();
-      // Keep the bounded handled-id history durable. A framework can hydrate a
-      // completed wrapper well after initialization, and a later reload must
-      // still recognize that wrapper as recovery work rather than resume it.
       return false;
     }
 
     const sessionId = wrapper.dataset.impeccableVariants;
 
-    // Don't resume if this session was already accepted/discarded
     if (isSessionHandled(sessionId)) return false;
 
-    // Svelte component sessions can't be resumed by counting DOM children: the
-    // wrapper holds a single mount target, not [data-impeccable-variant] nodes,
-    // and a page reload unmounts every compiled variant. Counting children here
-    // would strand the bar in CYCLING at 0/0. If there's no live in-memory mount
-    // for this wrapper, it's an orphan (reload / failed mount): drop it and let
-    // the live-server's SSE re-inject the manifest if the session is still live.
     if (isFrameworkComponentPreviewMode(wrapper.dataset.impeccablePreview)
         && svelteComponentSession?.sessionId !== sessionId) {
       wrapper.remove();
@@ -10063,7 +8881,6 @@ void main() {
     const variants = wrapper.querySelectorAll('[data-impeccable-variant]:not([data-impeccable-variant="original"])');
     arrivedVariants = variants.length;
 
-    // Restore state from localStorage if available
     const saved = loadSession();
     if (saved && saved.id === sessionId) {
       applySavedSessionMeta(saved);
@@ -10080,15 +8897,11 @@ void main() {
 
     const resumedState = arrivedVariants > 0 ? 'CYCLING' : 'GENERATING';
 
-    // A reload between the variants mounting and the agent's done reply
-    // restores a pending Tune state from the cache; the helper knows whether
-    // that generation already finished.
     if (arrivedVariants >= expectedVariants && expectedVariants > 0
         && (parameterGenerationState === 'pending' || parameterGenerationState === 'loading')) {
       settleParameterStateFromHelper(sessionId);
     }
 
-    // Find the visible variant's content element for highlight positioning.
     const isInsert = wrapper.dataset.impeccableMode === 'insert';
     const visEl = visibleVariant > 0 ? pickVariantContent(wrapper, visibleVariant) : null;
     const origEl = pickVariantContent(wrapper, 'original');
@@ -10099,28 +8912,15 @@ void main() {
       selectedElement = visEl || origEl || (isInsert ? findInsertAnchorInDom() : null) || wrapper.parentElement;
     }
 
-    // Set display state BEFORE starting observer (avoid triggering it)
     if (visibleVariant > 0) showVariantInDOM(currentSessionId, visibleVariant);
 
     showBar(state === 'CYCLING' ? 'cycling' : 'generating');
     startScrollTracking();
-    // A resume can BE the arrival, not just a re-entry after one. The server's
-    // generation preflight runs live-wrap with --defer-source-write, so the
-    // wrapper and every variant reach the DOM in one HMR batch, and the
-    // deferred-wrapper scout (constructed at init) runs before the variant
-    // MutationObserver (constructed at Go) on that batch. Finish the same
-    // transition the observer would have finished. Without hideShaderOverlay
-    // the generating shader stays frozen over the target and the session looks
-    // stuck at GENERATING while the bar already cycles (issue #719).
     if (state === 'CYCLING') {
       recoveryWaitingForAnchor = false;
       hideShaderOverlay();
       if (isInsert) finalizeInsertSession();
       disableInlineEdit();
-      // Build the params panel for the restored visible variant. Previously
-      // this was missed on page-reload resume: showVariantInDOM above fires
-      // refreshParamsPanel, but state was still IDLE at that moment so it
-      // hid. Now that state is CYCLING, re-fire.
       refreshParamsPanel();
     }
     saveSession();
@@ -10128,27 +8928,16 @@ void main() {
       sendCheckpoint('variants_progress');
     } else {
       queueCheckpoint(resumeReason);
-      // Only variants_progress and variants_ready count as publication
-      // progress. When the resume is the arrival, the observer never gets to
-      // report it (this function disconnects and re-creates it below, which
-      // drops the records it had already queued for this same batch), so
-      // without this the server never learns the variants were published.
       if (arrivedVariants > 0 && arrivedVariants >= expectedVariants && expectedVariants > 0) {
         sendCheckpoint('variants_ready');
       }
     }
 
-    // Start observing for more variants AFTER initial setup
     if (variantObserver) variantObserver.disconnect();
     variantObserver = startVariantObserver(currentSessionId);
 
-    // Hold the target at its saved viewport top through any subsequent
-    // HMR patches, variant inserts, or cycle swaps.
     startScrollLock(currentSessionId, readScrollY(), pickedAnchorViewportTop);
 
-    // If we reloaded mid-generation (Bun's HTML HMR destroys the shader
-    // canvas), re-capture the original's content and restart the shader so
-    // the wait doesn't go dead.
     if (state === 'GENERATING') {
       const shaderTarget = isInsert
         ? (ensureInsertPlaceholder() || findInsertAnchorInDom())
@@ -10170,10 +8959,6 @@ void main() {
     }
     return true;
   }
-
-  //
-  // Global bar (always visible at bottom)
-  //
 
   let globalBarEl = null;
   let globalBarBrandEl = null;
@@ -10213,14 +8998,14 @@ void main() {
         const prefs = JSON.parse(legacy);
         return { pickActive: !!prefs.pickActive, insertActive: false };
       }
-    } catch { /* ignore */ }
+    } catch {}
     return { pickActive: false, insertActive: false };
   }
 
   function saveInteractionPrefs() {
     try {
       localStorage.setItem(INTERACTION_PREFS_KEY, JSON.stringify({ pickActive, insertActive }));
-    } catch { /* ignore */ }
+    } catch {}
   }
 
   function loadPickPref() {
@@ -10258,7 +9043,6 @@ void main() {
   let pendingApplyInFlight = false;
   let firstSaveOfSession = true;
 
-  // Steer - collapsed pill in the global bar; expands while typing for page-level chat.
   let pageChatEl = null;
   let pageChatInput = null;
   let pageChatHint = null;
@@ -10276,7 +9060,6 @@ void main() {
   let voiceListening = false;
   let voiceSuppressSubmit = false;
   let voiceInterimBase = '';
-  /** @type {{ mode: 'steer'|'configure', input: HTMLInputElement, submit: () => void, beforeStart?: () => void } | null} */
   let voiceCtx = null;
   const PAGE_CHAT_COLLAPSED_W = '104px';
   const PAGE_CHAT_QUEUED_W = '212px';
@@ -10286,16 +9069,7 @@ void main() {
   const AGENT_STATUS_POLL_MS = 5000;
   const AGENT_DISCONNECTED_MARK = 'oklch(62% 0 0 / 0.78)';
   const AGENT_DISCONNECTED_TIP = 'Agent disconnected - run live-poll.mjs to connect';
-  // The indicator tracks whether a poll is parked, which is what decides if
-  // steering can reach the agent right now. That goes quiet two ways, and they
-  // need different copy: nobody is polling at all, or the agent took the work
-  // and is busy with it. Under one-shot foreground polling the second case is
-  // every normal generation, and telling the user to start a poll loop then is
-  // wrong advice about a healthy session.
   const AGENT_BUSY_TIP = 'Agent is working - steering resumes when it finishes';
-  // Same distinction, said where the steer request is waiting. A submitted
-  // steer that lands while a generate holds the poll lease is not stuck, it is
-  // second in line, and the pulsing dots alone read as "nothing is happening".
   const STEER_QUEUED_HINT = 'Queued behind current generation';
   const GLOBAL_BAR_SECTION_GAP = 8;
   const GLOBAL_BAR_INNER_GAP = 2;
@@ -10306,61 +9080,37 @@ void main() {
   const ICON_PAGE_VOICE =
     '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
 
-  // Theme-aware color palette for the global bar. We detect the page's
-  // ambient background and invert - dark bar on light pages, light bar on
-  // dark pages. This keeps the bar from fighting with the host design.
   function detectPageTheme() {
     try {
-      // Dev override: set localStorage 'impeccable-dev-theme' to 'light' or
-      // 'dark' to preview the opposite palette without actually changing the
-      // page bg. Used for screenshots and theme QA.
       const override = localStorage.getItem('impeccable-dev-theme');
       if (override === 'light' || override === 'dark') return override;
 
-      // Walk body → html, taking the first opaque background. The browser's
-      // default body / html background is `rgba(0, 0, 0, 0)`, which a naive
-      // regex would read as black and mislabel a perfectly white page as
-      // dark. Honoring alpha avoids that - and falling through to <html>
-      // catches the common pattern of a bg only on <html> (or only on body).
       function readOpaque(el) {
         if (!el) return null;
         const bg = getComputedStyle(el).backgroundColor;
         const m = bg.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/);
         if (!m) return null;
         const alpha = m[4] == null ? 1 : parseFloat(m[4]);
-        if (alpha < 0.5) return null; // transparent / nearly transparent → skip
+        if (alpha < 0.5) return null;
         return [+m[1], +m[2], +m[3]];
       }
 
       const rgb = readOpaque(document.body) || readOpaque(document.documentElement);
-      // Both transparent → fall back to the browser's effective canvas color.
-      // White is the universal default; only one in a thousand sites swaps it
-      // via `color-scheme: dark` on <html>, and `prefers-color-scheme` lets
-      // us catch that case.
       if (!rgb) {
         return matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       }
       const [r, g, b] = rgb;
-      // Perceptual luminance (Rec. 709)
       const L = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
       return L > 0.55 ? 'light' : 'dark';
     } catch { return 'light'; }
   }
 
   function barPaletteForTheme(_theme) {
-    // Picker chrome always uses neo-kinpaku styling (homepage /live-mode demo
-    // bars in kinpaku-kit.css), regardless of host page light/dark theme.
     return {
       surface: C.ink,
       surfaceDeep: C.ink,
-      // Quiet neutral hairline (was the loud kinpaku gold border). Gold lives on
-      // the brand mark and the active control instead.
       border: 'oklch(92% 0 0 / 0.13)',
-      // Crisp graphite pill behind the active toggle (was a murky kinpaku-dim
-      // wash); the gold text/icon carries the "selected" signal.
       toggleActive: 'oklch(27% 0 0)',
-      // Neutral hairline for internal control borders / dividers (was a warm
-      // gold rule that read as muddy champagne edges on the pill / input / count).
       hairline: 'oklch(92% 0 0 / 0.12)',
       text: 'oklch(91% 0 0)',
       textDim: 'oklch(72% 0 0)',
@@ -10369,7 +9119,6 @@ void main() {
       exitHover: 'oklch(58% 0.15 35 / 0.18)',
       shadow: PICKER_SHADOW,
       chatSurface: 'oklch(22% 0.012 82)',
-      // Verdigris patina - secondary state (see site/styles/kinpaku-tokens.css)
       patina: 'oklch(70% 0.12 188)',
       patinaPale: 'oklch(82% 0.07 188)',
       patinaSoft: 'oklch(70% 0.12 188 / 0.28)',
@@ -10459,11 +9208,6 @@ void main() {
     syncPageChatSendButton();
   }
 
-  /**
-   * Send is visible once the pill is open for typing and enabled once there is
-   * something to send. It disappears entirely while a steer is in flight, the
-   * same way the mic does: a second submit during the lock has nowhere to go.
-   */
   function syncPageChatSendButton() {
     if (!pageChatSendBtn) return;
     const P = pageChatPalette();
@@ -10480,12 +9224,6 @@ void main() {
     pageChatSendBtn.title = pageChatSendBtn.disabled ? 'Type what to change first' : 'Send (Enter)';
   }
 
-  /**
-   * A submitted steer is queued, not ignored, whenever no poll is parked and
-   * the browser knows a generation is in flight: the agent holds the lease and
-   * will not see the steer until it finishes. Saying so beats three dots that
-   * look identical to a lost request.
-   */
   function steerQueuedBehindGeneration() {
     return steerLocked && !agentPollingConnected && agentHasWorkInFlight();
   }
@@ -10715,8 +9453,6 @@ void main() {
     }
 
     if (typingReady) {
-      // Collapsed type-to-steer: show the real input + caret instead of a
-      // truncated patina "Steer" label with an invisible focused field.
       pageChatInput.placeholder = PAGE_CHAT_PLACEHOLDER_COLLAPSED;
       if (pageChatHint) {
         pageChatHint.style.display = 'none';
@@ -10755,7 +9491,7 @@ void main() {
     syncPageChatVisual();
     pageChatInput.style.pointerEvents = 'auto';
     const before = activeElementDeep();
-    try { window.focus(); } catch { /* embed may block */ }
+    try { window.focus(); } catch {}
     try { pageChatInput.focus({ preventScroll: true }); } catch { pageChatInput.focus(); }
     syncPageChatFocusRing();
     syncPageChatChrome();
@@ -10859,11 +9595,6 @@ void main() {
     }, STEER_AWAIT_TIMEOUT_MS);
   }
 
-  /**
-   * Two minutes of silence has three different causes and only one of them is
-   * "live-poll is not running". Naming the wrong one sends the user to restart
-   * a poll loop that was never the problem.
-   */
   function steerTimeoutMessage() {
     const head = 'Steer timed out after 2 minutes. ';
     if (steerQueuedBehindGeneration()) {
@@ -11011,8 +9742,6 @@ void main() {
       if (pageChatEl) pageChatEl.dataset.voiceListening = listening ? 'true' : 'false';
       syncPageChatChrome();
     } else if (voiceCtx?.mode === 'configure') {
-      // The bar shows either the replace row's voice button or the insert
-      // row's - both run voice through the 'configure' mode.
       const voiceBtn = uiGetById(PREFIX + '-configure-voice') || uiGetById(PREFIX + '-insert-voice');
       if (voiceBtn) {
         voiceBtn.dataset.active = listening ? 'true' : 'false';
@@ -11036,7 +9765,7 @@ void main() {
     try {
       if (opts && opts.abort) rec.abort();
       else rec.stop();
-    } catch { /* already ended */ }
+    } catch {}
   }
 
   function stopVoice(opts) {
@@ -11184,9 +9913,6 @@ void main() {
     steerPendingMessage = text;
     lockSteerChat();
     scheduleSteerAwaitTimeout(id);
-    // Checkpoints follow the steer event, never precede it: the steer event
-    // is what creates the session journal server-side, and a checkpoint for
-    // a not-yet-created session is rejected as unknown_session.
     sendEvent({
       type: 'steer',
       id,
@@ -11314,9 +10040,6 @@ void main() {
     pageChatVoiceBtn.setAttribute('aria-label', 'Voice input');
     pageChatVoiceBtn.innerHTML = ICON_PAGE_VOICE;
 
-    // Visible Send, same affordance the element-level Go bar gets from
-    // buildConfigureSubmitButton. Enter still submits; the button exists so a
-    // typed steer does not look like a dead-end text field.
     pageChatSendBtn = el('button', {
       display: 'none', alignItems: 'center', justifyContent: 'center',
       padding: '0', boxSizing: 'border-box',
@@ -11441,7 +10164,6 @@ void main() {
     steerFocusLog('page-chat-mounted', {});
   }
 
-  // Impeccable mark - same paths as site/components/Header.astro + favicon.svg.
   function brandMarkSvg(color = C.brand, size = 18) {
     return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${color}" aria-hidden="true">
       <path d="M5 2.5 L13.5 2.5 L5.5 21.5 L5 21.5 Q2.5 21.5 2.5 19 L2.5 5 Q2.5 2.5 5 2.5 Z"/>
@@ -11449,20 +10171,10 @@ void main() {
     </svg>`;
   }
 
-  /**
-   * True while the browser is waiting on work it already handed to the agent.
-   * In these states a quiet poll indicator means "busy", not "absent".
-   */
   function agentHasWorkInFlight() {
     return state === 'GENERATING' || state === 'SAVING';
   }
 
-  /**
-   * Derived at read time, not cached: which of the two reasons applies depends on
-   * the live state, which moves between the 5s status polls. The truthiness is
-   * the same either way, so the indicator's visuals can stay driven by the
-   * cached value while the wording stays current.
-   */
   function agentStatusText() {
     if (agentPollingConnected) return null;
     return agentHasWorkInFlight() ? AGENT_BUSY_TIP : AGENT_DISCONNECTED_TIP;
@@ -11475,8 +10187,6 @@ void main() {
     const P = barPaletteForTheme(globalBarEl?.dataset.theme || detectPageTheme());
     agentStatusMessage = agentStatusText();
     globalBarBrandEl.dataset.agentConnected = connected ? 'true' : 'false';
-    // The tooltip is mouse-only, so carry the same distinction in the label or
-    // screen-reader users are left with the vaguer of the two readings.
     globalBarBrandEl.setAttribute('aria-label', agentStatusMessage
       ? 'Impeccable live mode - ' + (agentHasWorkInFlight() ? 'agent is working' : 'agent not polling')
       : 'Impeccable live mode');
@@ -11524,8 +10234,6 @@ void main() {
   function showAgentPollTooltip(anchor) {
     if (!agentStatusMessage || !anchor) return;
     const tip = ensureAgentPollTooltip();
-    // Re-derive rather than reuse the cached copy: the live state may have moved
-    // since the last status poll set it.
     tip.textContent = agentStatusText() || AGENT_DISCONNECTED_TIP;
     tip.style.transition = 'none';
     tip.style.display = 'block';
@@ -11552,9 +10260,6 @@ void main() {
     }
   }
 
-  // After a resume the cache may say the Tune knobs are still coming while
-  // the agent already replied done before the reload. The helper's session
-  // record settles it; otherwise the done reply on SSE does.
   function settleParameterStateFromHelper(sessionId) {
     fetch('http://localhost:' + PORT + '/status?token=' + TOKEN, { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
@@ -11564,7 +10269,7 @@ void main() {
         if (!session) return;
         if (session.generationCompletedAt || session.generationPhase === 'completed') completeParameterGenerationIfReady();
       })
-      .catch(() => { /* the done reply on SSE settles it otherwise */ });
+      .catch(() => {});
   }
 
   function fetchAgentPollingStatus() {
@@ -11575,7 +10280,7 @@ void main() {
           syncAgentPollingUi(data.agentPolling);
         }
       })
-      .catch(() => { /* server loss handled elsewhere */ });
+      .catch(() => {});
   }
 
   function startAgentStatusPoll() {
@@ -11588,9 +10293,6 @@ void main() {
     const theme = detectPageTheme();
     const P = barPaletteForTheme(theme);
 
-    // Custom focus-visible for bar buttons. Browser default is a heavy
-    // blue ring that looks jarring on the dark capsule. Replace with a
-    // soft accent-tinted inner ring that respects the bar's palette.
     if (!uiGetById(PREFIX + '-bar-focus-style')) {
       const s = document.createElement('style');
       s.id = PREFIX + '-bar-focus-style';
@@ -11606,9 +10308,6 @@ void main() {
       uiAppendStyle(s);
     }
 
-    // The generate lane's helper says so in the served script itself, so a
-    // lane session never draws the bar at all; every other session mounts
-    // it exactly as before.
     const barHiddenFromStart = window.__IMPECCABLE_LIVE_BAR_HIDDEN__ === true;
     globalBarEl = el('div', {
       position: 'fixed', bottom: '14px', left: '50%',
@@ -11623,7 +10322,7 @@ void main() {
       boxShadow: P.shadow,
       fontFamily: FONT, fontSize: '12px', lineHeight: '1',
       opacity: '0',
-      overflow: 'hidden',          // clip the full-bleed brand mark to the bar radius
+      overflow: 'hidden',
       maxWidth: 'calc(100vw - 16px)',
       boxSizing: 'border-box',
       transition: 'opacity 0.3s ' + EASE + ', transform 0.3s ' + EASE,
@@ -11635,7 +10334,6 @@ void main() {
       globalBarEl.dataset.liveBarDisplay = 'flex';
     }
 
-    // Brand mark - kinpaku Impeccable icon (site header / favicon paths).
     const brand = el('span', {
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
       alignSelf: 'stretch', position: 'relative',
@@ -11674,7 +10372,6 @@ void main() {
     globalBarEl.appendChild(brand);
     syncAgentPollingUi(false);
 
-    // Inner wrapper: holds the toggles with normal bar padding.
     const inner = el('div', {
       display: 'flex', alignItems: 'center',
       padding: '4px 5px 4px ' + GLOBAL_BAR_INNER_PAD_LEFT + 'px', gap: GLOBAL_BAR_INNER_GAP + 'px',
@@ -11683,7 +10380,6 @@ void main() {
     inner.id = PREFIX + '-global-bar-inner';
     globalBarEl.appendChild(inner);
 
-    // Button factory: icon-only at rest, label slides in on hover/active.
     function makeIconBtn({ id, svg, label, ariaLabel, labelFont, onClick }) {
       const b = el('button', {
         position: 'relative',
@@ -11713,10 +10409,6 @@ void main() {
         if (!labelEl || (!force && b.dataset.active === 'true')) return;
         labelEl.style.maxWidth = '0'; labelEl.style.opacity = '0'; labelEl.style.marginLeft = '0'; labelEl.style.transform = 'translateX(-4px)';
       };
-      // Per-button hover only changes color (no layout). The label expand/
-      // collapse is driven by the bar-level mouseenter/mouseleave so moving
-      // the mouse between adjacent buttons doesn't trigger per-button width
-      // thrashing - the whole bar grows once and shrinks once.
       b.addEventListener('mouseenter', () => { if (b.dataset.active !== 'true') b.style.color = P.text; });
       b.addEventListener('mouseleave', () => { if (b.dataset.active !== 'true') b.style.color = P.textDim; });
       b.addEventListener('click', onClick);
@@ -11725,7 +10417,6 @@ void main() {
       return b;
     }
 
-    // Pick toggle - restored from localStorage; both pick and insert may be off.
     const pickBtn = makeIconBtn({
       id: PREFIX + '-pick-toggle',
       svg: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></svg>',
@@ -11744,7 +10435,6 @@ void main() {
     });
     inner.appendChild(insertBtn);
 
-    // Detect toggle
     const detectBtn = makeIconBtn({
       id: PREFIX + '-detect-toggle',
       svg: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>',
@@ -11762,7 +10452,6 @@ void main() {
     detectBtn.appendChild(detectBadge);
     inner.appendChild(detectBtn);
 
-    // DESIGN.md panel toggle - quartet of color squares as the mark.
     const designBtn = makeIconBtn({
       id: PREFIX + '-design-toggle',
       svg: `<span style="display:inline-grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;width:14px;height:14px;border-radius:3px;overflow:hidden;box-shadow:inset 0 0 0 1px oklch(92% 0 0 / 0.13);flex-shrink:0">
@@ -11780,8 +10469,6 @@ void main() {
 
     initPageChat(inner, P);
 
-    // Pending manual edits live outside the bar so applying staged copy edits
-    // reads as a distinct next step instead of another chrome toggle.
     pendingDockEl = el('div', {
       position: 'fixed',
       left: '0',
@@ -11956,7 +10643,6 @@ void main() {
     pendingDockEl.appendChild(pendingKeepFixingBtn);
     pendingDockEl.appendChild(pendingRollbackBtn);
 
-    // Thin divider before the exit button
     const divider = el('span', {
       width: '1px', height: '18px',
       background: P.hairline,
@@ -11965,15 +10651,6 @@ void main() {
     });
     inner.appendChild(divider);
 
-    // Exit × on the right - intentionally subtle (textDim at rest, text on
-    // hover) so it sits behind the active toggles in visual hierarchy.
-    //
-    // Explicit padding + box-sizing here is load-bearing: a host page like
-    // `button { padding: 0.5rem 1rem; }` (very common in resets) would
-    // otherwise inflate this 24x24 button into 56x40 and push the SVG out
-    // of the visible bar - the X stays invisible even though the styles in
-    // DevTools look fine. Every other chrome button sets padding inline;
-    // this one needed it too.
     const exitBtn = el('button', {
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
       padding: '0', boxSizing: 'border-box',
@@ -11991,8 +10668,6 @@ void main() {
     exitBtn.addEventListener('click', () => { sendEvent({ type: 'exit' }); teardown(); });
     inner.appendChild(exitBtn);
 
-    // Bar-level hover: expand mode labels unless Steer is using the space.
-    // Buttons with dataset.active="true" ignore collapse (their label stays).
     globalBarEl.addEventListener('mouseenter', () => {
       syncGlobalBarExpandedLabels(true);
       syncPageChatExpandedWidth();
@@ -12005,7 +10680,7 @@ void main() {
       setTimeout(schedulePendingDockPosition, 260);
     });
     globalBarEl.addEventListener('pointerdown', () => {
-      try { window.focus(); } catch { /* in-app preview may block */ }
+      try { window.focus(); } catch {}
     }, true);
 
     uiAppend(pendingDockEl);
@@ -12026,11 +10701,8 @@ void main() {
       syncPageChatFocus('global-bar-visible');
     });
 
-    // Listen for detection results AND ready signal
     window.addEventListener('message', onDetectMessage);
     updateGlobalBarState();
-    // The helper may already have said the bar stays hidden (a connect
-    // that raced the bar build, or a reload mid-lane): re-apply it here.
     if (liveBarHiddenByHelper) setLiveBarHidden(true);
   }
 
@@ -12043,7 +10715,6 @@ void main() {
     const theme = globalBarEl?.dataset.theme || 'light';
     const P = barPaletteForTheme(theme);
 
-    // Sync one toggle's active state, colors, and slide-label visibility.
     function sync(btn, active) {
       if (!btn) return;
       btn.style.background = active ? P.toggleActive : 'transparent';
@@ -12065,9 +10736,6 @@ void main() {
       btn.style.opacity = controlsLocked ? '0.55' : '1';
     });
 
-    // If the bar is currently under the cursor, keep all labels expanded -
-    // otherwise clicking a toggle that deactivates (e.g. closing DESIGN.md)
-    // would collapse its label while the user's mouse is still on the bar.
     syncGlobalBarExpandedLabels(globalBarEl && globalBarEl.matches(':hover'));
 
     if (detectBadge) {
@@ -12075,29 +10743,19 @@ void main() {
       detectBadge.textContent = detectCount;
     }
 
-    // When pick/insert is active, make detect overlays click-through
     document.querySelectorAll('.impeccable-overlay').forEach(o => {
       o.style.pointerEvents = (pickActive || insertActive) ? 'none' : '';
     });
     syncPageInteractionCursor();
   }
 
-  let detectReady = false; // true once detect script posts 'impeccable-ready'
-  let detectPendingScan = false; // scan requested before script was ready
+  let detectReady = false;
+  let detectPendingScan = false;
 
   function requestDetectScan() {
     const scanId = String(++detectScanSeq);
     activeDetectScanId = scanId;
     pendingDetectScanId = scanId;
-    // Send the project's detector waivers with the scan so the overlay
-    // filters the same findings the CLI and the edit hook do (issue #639).
-    // live-browser-ignores.js resolves .impeccable config for this page:
-    // ignoreRules suppress outright, wildcard ignoreValues suppress their
-    // rule in the files they name, ignoreFiles that name the page skip the
-    // scan wholesale, and the rest match on the finding's own value inside
-    // the detector. Guarded twice: a stale cached live.js without the
-    // resolver part still scans, and a resolver that throws must not brick
-    // the detect toggle; both degrade to an unfiltered scan.
     const ignoresApi = window.__IMPECCABLE_LIVE_IGNORES__;
     let ignores = { disabledRules: [], disabledValues: [], skipScan: false };
     if (typeof ignoresApi?.resolveDetectIgnores === 'function') {
@@ -12205,7 +10863,6 @@ void main() {
 
   function onDetectMessage(e) {
     if (!e.data || typeof e.data.source !== 'string') return;
-    // Detection script is loaded and ready
     if (e.data.source === 'impeccable-ready') {
       detectReady = true;
       if (detectPendingScan && detectActive) {
@@ -12213,7 +10870,6 @@ void main() {
         requestDetectScan();
       }
     }
-    // Scan results arrived
     if (e.data.source === 'impeccable-results') {
       if (!detectActive) return;
       if (activeDetectScanId && e.data.scanId !== activeDetectScanId) return;
@@ -12226,12 +10882,7 @@ void main() {
     }
   }
 
-  /** Full teardown: remove all UI, disconnect SSE, clean up. */
   function teardown() {
-    // Declined targets die with the overlay: the IDLE transition below must
-    // not re-claim a lease this page can no longer act on. So does the
-    // target ledger: an 'acting' entry from a Go that never happened must
-    // not refuse every target the next connection hears.
     busyDeclinedTargets.clear();
     agentTargetsSeen.clear();
     liveBarHiddenByHelper = false;
@@ -12287,7 +10938,6 @@ void main() {
     document.removeEventListener('click', handleClick, true);
     document.removeEventListener('keydown', handleKeyDown, true);
     window.removeEventListener('message', onDetectMessage);
-    // Remove detection overlays
     window.postMessage({ source: 'impeccable-command', action: 'remove' }, '*');
     setLiveState('IDLE');
     document.getElementById(PICK_CURSOR_STYLE_ID)?.remove();
@@ -12296,10 +10946,6 @@ void main() {
     console.log('[impeccable] Live mode exited.');
   }
 
-  //
-  // Design System Panel - visualizes the project's .impeccable/design.json sidecar
-  //
-
   const DESIGN_PREFS_KEY = 'impeccable-live-design-panel';
   const DESIGN_PANEL_WIDTH = 440;
 
@@ -12307,24 +10953,22 @@ void main() {
   let designShadow = null;
   let designState = {
     open: false,
-    tab: 'visual',          // 'visual' | 'raw'
-    parsed: null,           // parseDesignMd output (frontmatter + body sections)
-    sidecar: null,          // .impeccable/design.json v2 payload (extensions + components + narrative)
+    tab: 'visual',
+    parsed: null,
+    sidecar: null,
     hasMd: false,
     hasSidecar: false,
-    present: null,          // true/false once fetch resolves
-    raw: null,              // raw DESIGN.md for the raw tab
-    mdNewerThanJson: false, // stale-hint flag
+    present: null,
+    raw: null,
+    mdNewerThanJson: false,
     loading: false,
     error: null,
-    collapsed: {            // narrative-section accordion state
+    collapsed: {
       rules: true, dosdonts: true, overview: true,
     },
   };
 
   function loadDesignPrefs() {
-    // `open` is intentionally NOT persisted - the panel always starts closed
-    // so live mode doesn't auto-slide a big panel over the page on startup.
     try {
       const raw = localStorage.getItem(DESIGN_PREFS_KEY);
       if (!raw) return;
@@ -12333,7 +10977,7 @@ void main() {
       if (prefs.collapsed && typeof prefs.collapsed === 'object') {
         Object.assign(designState.collapsed, prefs.collapsed);
       }
-    } catch { /* ignore */ }
+    } catch {}
   }
 
   function saveDesignPrefs() {
@@ -12342,7 +10986,7 @@ void main() {
         tab: designState.tab,
         collapsed: designState.collapsed,
       }));
-    } catch { /* ignore */ }
+    } catch {}
   }
 
   function initDesignPanel() {
@@ -12357,7 +11001,6 @@ void main() {
     designShadow = designHost.attachShadow({ mode: 'open' });
 
     const style = document.createElement('style');
-    // Theme-match the bar: dark chrome on light pages, light chrome on dark pages.
     const theme = detectPageTheme();
     style.textContent = designPanelCss(barPaletteForTheme(theme));
     designShadow.appendChild(style);
@@ -12367,10 +11010,6 @@ void main() {
     designShadow.appendChild(root);
 
     uiAppend(designHost);
-    // The host is pointer-events: none; the panel inside the shadow DOM
-    // manages its own auto/none. Events bubble through the shadow boundary,
-    // so attaching here silences host-page outside-interaction handlers
-    // without touching the host's click-through behavior.
     defangOutsideHandlers(designHost, { setPointerEvents: false });
 
     loadDesignPrefs();
@@ -12380,24 +11019,20 @@ void main() {
     }
   }
 
-  // Neutral panel palette - deliberately NOT Impeccable-branded. The panel is
-  // a viewer of the project's design system, not an Impeccable surface.
   const DP = {
-    canvas:   'oklch(94% 0 0)',            // panel background
-    tile:     'oklch(98.5% 0 0)',          // card-on-canvas
-    tileAlt:  'oklch(96% 0 0)',            // subtler tile for inner surfaces
+    canvas:   'oklch(94% 0 0)',
+    tile:     'oklch(98.5% 0 0)',
+    tileAlt:  'oklch(96% 0 0)',
     ink:      'oklch(15% 0 0)',
     ink2:     'oklch(35% 0 0)',
     meta:     'oklch(55% 0 0)',
     hairline: 'oklch(88% 0 0)',
     hairlineSoft: 'oklch(92% 0 0)',
-    amber:    'oklch(77% 0.13 82)',         // stale-hint accent
+    amber:    'oklch(77% 0.13 82)',
     amberBg:  'oklch(89% 0.055 84)',
   };
 
   function designPanelCss(BP) {
-    // BP = bar palette (theme-aware, matches the global bar).
-    // DP = internal content palette (neutral, so tiles render colors true).
     return `
       :host, .root { all: initial; }
       .root {
@@ -12674,8 +11309,6 @@ void main() {
     const root = designShadow.querySelector('.root');
     root.innerHTML = '';
 
-    // (Panel toggle lives in the global bar - no floating FAB.)
-    // Panel
     const panel = document.createElement('aside');
     panel.className = 'panel';
     panel.setAttribute('data-open', designState.open ? 'true' : 'false');
@@ -12711,7 +11344,7 @@ void main() {
         saveDesignPrefs();
         renderDesignChrome();
         if (t[0] === 'raw' && designState.raw === null && !designState.loading) {
-          fetchDesignSystem(); // raw is part of the same fetch pair
+          fetchDesignSystem();
         }
       });
       tabs.appendChild(btn);
@@ -12760,7 +11393,7 @@ void main() {
       designState.error = err?.message || 'Failed to load design system.';
     } finally {
       designState.loading = false;
-      renderDesignChrome(); // refresh title from data
+      renderDesignChrome();
     }
   }
 
@@ -12790,7 +11423,6 @@ void main() {
       return;
     }
 
-    // Visual tab - single unified render path.
     if (designState.mdNewerThanJson) body.appendChild(renderStaleHint());
     if (designState.hasMd && !designState.hasSidecar) {
       body.appendChild(renderParsedMdCta());
@@ -12822,15 +11454,6 @@ void main() {
     return box;
   }
 
-  // Unified render: merge parsed DESIGN.md frontmatter with sidecar v2
-
-  /**
-   * The empty state has to say which emptiness it is. `present:false` (no
-   * DESIGN.md at all) is handled upstream in renderDesignBody; everything here
-   * means the helper found a design system and this panel found nothing in it
-   * worth drawing. Telling that user "no design system data" reads as "your
-   * DESIGN.md is missing" and sends them to write a file they already have.
-   */
   function designEmptyMessage() {
     if (designState.hasMd && !designState.hasSidecar) {
       return 'DESIGN.md found, no structured tokens to display. Run ' + IMPECCABLE_COMMAND + ' document to generate the .impeccable/design.json sidecar.';
@@ -12842,9 +11465,6 @@ void main() {
   }
 
   function renderDesignVisual(body, parsed, sidecar) {
-    // Count only what this function draws: renderDesignBody may already have
-    // appended a stale-sidecar hint or the basic-view CTA, and those must not
-    // pass for token content.
     const beforeCount = body.childElementCount;
     const frontmatter = parsed?.frontmatter || {};
     const extensions = sidecar?.extensions || {};
@@ -12864,8 +11484,6 @@ void main() {
     const components = sidecar?.components || [];
     if (components.length) renderComponentTiles(body, components);
 
-    // Narrative: sidecar wins if present (richer, agent-curated). Otherwise
-    // synthesize from prose sections.
     const narrative = sidecar?.narrative || synthesizeNarrative(parsed);
     if (narrative.rules?.length) body.appendChild(renderRulesCollapsible(narrative.rules));
     if ((narrative.dos?.length || narrative.donts?.length)) body.appendChild(renderDosDontsCollapsible(narrative));
@@ -12878,9 +11496,6 @@ void main() {
     }
   }
 
-  // Frontmatter primitives + sidecar colorMeta → tile-ready color models.
-  // A matching prose bullet (when the slug sits in the bullet text) supplies
-  // description as a last-resort fallback.
   function buildColorModels(fmColors, colorMeta, proseColors) {
     if (!fmColors) return [];
     const meta = colorMeta || {};
@@ -12909,8 +11524,6 @@ void main() {
         family,
         fallback,
         weight: spec?.fontWeight ?? 400,
-        // fontStyle isn't in Stitch's frontmatter schema; the sidecar carries
-        // it when a role is rendered in italic (e.g. display italic).
         style: m.style || 'normal',
         sampleSize: spec?.fontSize || '1rem',
         lineHeight: spec?.lineHeight != null ? String(spec.lineHeight) : '',
@@ -13005,7 +11618,6 @@ void main() {
 
   function synthesizeRamp(c) {
     if (c.tonalRamp?.length) return c.tonalRamp;
-    // If base value is OKLCH, synthesize an 8-step ramp across lightness.
     const m = typeof c.value === 'string' && c.value.match(/^oklch\(\s*([\d.]+)%\s+([\d.]+)\s+([\d.]+)\s*(?:\/\s*([\d.]+))?\s*\)$/i);
     if (!m) return [];
     const [, , chroma, hue] = m;
@@ -13029,12 +11641,11 @@ void main() {
       specimen.style.fontFamily = fontStack(t);
       specimen.style.fontWeight = String(t.weight || 400);
       specimen.style.fontStyle = t.style || 'normal';
-      specimen.style.fontSize = '56px';  // Fixed specimen size - compare faces, not scales.
+      specimen.style.fontSize = '56px';
       specimen.style.letterSpacing = 'normal';
       specimen.style.textTransform = 'none';
       tile.appendChild(specimen);
 
-      // The system's actual sample size for this role, shown as small mono meta below.
       if (t.sampleSize) {
         const scale = document.createElement('div');
         scale.style.cssText = 'font-family:' + MONO + '; font-size: 10px; color:' + DP.meta + '; margin-top: 2px;';
@@ -13128,9 +11739,6 @@ void main() {
   }
 
   function renderComponentTiles(body, components) {
-    // Group consecutive components that share a kind into one tile. This avoids
-    // a pile of one-component tiles (e.g., three button variants = three tiles)
-    // and reads more like a proper category.
     const groups = groupByKind(components);
 
     for (const group of groups) {
@@ -13149,7 +11757,6 @@ void main() {
         const stage = document.createElement('div');
         stage.className = 'cmp-stage';
 
-        // Render the component in its own shadow root so its CSS can't bleed.
         const host = document.createElement('div');
         const sub = host.attachShadow({ mode: 'open' });
         const style = document.createElement('style');
@@ -13160,8 +11767,6 @@ void main() {
         sub.appendChild(container);
         stage.appendChild(host);
 
-        // Show component name as a sublabel only when the tile groups >1 item,
-        // or when the component's display name differs from its kind.
         const showSublabel = group.length > 1;
         if (showSublabel) {
           const lbl = document.createElement('div');
@@ -13172,8 +11777,6 @@ void main() {
         tile.appendChild(stage);
       }
 
-      // Single shared description if all items carry the same one; otherwise
-      // skip - per-item descriptions clutter a grouped tile.
       if (group.length === 1 && group[0].description) {
         const d = document.createElement('div');
         d.className = 'c-desc';
@@ -13208,8 +11811,6 @@ void main() {
     };
     return labels[kind] || (kind ? kind.charAt(0).toUpperCase() + kind.slice(1) + 's' : 'Components');
   }
-
-  // Collapsibles.
 
   function buildCollapsible(key, label, count) {
     const wrap = document.createElement('div');
@@ -13300,8 +11901,6 @@ void main() {
   }
 
   function cssSafe(v) {
-    // Strip anything outside valid CSS value chars to prevent injection via
-    // .impeccable/design.json values rendered into inline style strings.
     return String(v).replace(/[<>"'`\n]/g, '');
   }
 
@@ -13317,8 +11916,6 @@ void main() {
     return s.replace(/\s+#.*$/, '').trim();
   }
 
-  // Raw tab: minimal markdown renderer (subset)
-
   function renderRawTab(body, md) {
     const wrap = document.createElement('div');
     wrap.className = 'md';
@@ -13333,8 +11930,8 @@ void main() {
     let inCode = false;
     let codeBuf = [];
     let paraBuf = [];
-    let listBuf = [];  // array of { indent, html }
-    let listType = null; // 'ul' | 'ol'
+    let listBuf = [];
+    let listType = null;
 
     const flushPara = () => {
       if (paraBuf.length) {
@@ -13354,7 +11951,6 @@ void main() {
     for (; i < lines.length; i++) {
       const line = lines[i];
 
-      // Code fence
       const fence = line.match(/^```(\w*)\s*$/);
       if (fence) {
         if (!inCode) { flushAll(); inCode = true; codeBuf = []; }
@@ -13402,7 +11998,6 @@ void main() {
   }
 
   function buildListHtml(items, type) {
-    // Nest by indent (one level deep is plenty for DESIGN.md).
     let html = `<${type}>`;
     let lastIndent = 0;
     for (const it of items) {
@@ -13416,15 +12011,10 @@ void main() {
   }
 
   function inlineMd(text) {
-    // Order matters: escape first, then re-inject tags.
     let s = escapeHtml(text);
-    // Code spans
     s = s.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
-    // Links [text](url)
     s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`);
-    // Bold
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    // Italic (only single *…*, skip if inside bold already handled)
     s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
     return s;
   }
@@ -13447,12 +12037,8 @@ void main() {
     try {
       navigator.clipboard.writeText(text);
       showToast('Copied: ' + text);
-    } catch { /* ignore */ }
+    } catch {}
   }
-
-  //
-  // Init
-  //
 
   function init() {
     try { history.scrollRestoration = 'manual'; } catch {}
@@ -13472,7 +12058,6 @@ void main() {
     document.addEventListener('keydown', handleKeyDown, true);
     connectSSE();
 
-    // Check for an active session to resume (variant wrapper already in DOM after HMR)
     const resumed = resumeSession();
     if (!resumed) {
       console.log('[impeccable] Live variant mode ready. Hover over elements to pick one.');
@@ -13480,10 +12065,6 @@ void main() {
       console.log('[impeccable] Resumed active variant session ' + currentSessionId + ' (' + arrivedVariants + '/' + expectedVariants + ' variants).');
     }
 
-    // SvelteKit, React, and other frameworks may restore a durable session
-    // before hydration adds its variant wrapper. Keep a deferred-wrapper scout
-    // whenever init did not see a runtime wrapper, even if local/server state
-    // was already restored successfully. Disconnect on the first wrapper hit.
     if (!resumed || !document.querySelector('[data-impeccable-variants],[data-impeccable-carbonize]')) {
       const deferredResumeRevision = liveInteractionRevision;
       const scout = new MutationObserver(() => {

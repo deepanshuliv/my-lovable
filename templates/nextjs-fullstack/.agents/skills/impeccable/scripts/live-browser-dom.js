@@ -1,10 +1,3 @@
-/**
- * Browser-side DOM helpers for Impeccable live mode.
- *
- * Kept separate from live-browser.js so future browser script parts can share
- * chrome mounting, lookup, focus, and picker helpers without depending on the
- * full overlay UI bundle.
- */
 (function (root) {
   'use strict';
   if (!root) return;
