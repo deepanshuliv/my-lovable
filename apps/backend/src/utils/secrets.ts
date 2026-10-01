@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { prisma } from '@repo/db';
+import { redis, secretsCacheKey } from '@repo/redis';
 import { maskPreview, registerSecrets } from '@repo/shared';
 import { injectSecrets } from '../sandbox';
 
@@ -32,7 +33,6 @@ export function isSecretsConfigured(): boolean {
 export type Encrypted = { ciphertext: string; iv: string; authTag: string };
 
 export function encrypt(plaintext: string): Encrypted {
-  
   const iv = randomBytes(12);
   const cipher = createCipheriv(ALGORITHM, getMasterKey(), iv);
   const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
@@ -56,19 +56,19 @@ export function decrypt(record: Encrypted): string {
 
 export function isValidSecretKey(key: string): boolean {
   if (!key || key.length < 1 || key.length > 64) return false;
-  
+
   const firstCode = key.charCodeAt(0);
   if (firstCode < 65 || firstCode > 90) return false;
-  
+
   for (let i = 1; i < key.length; i++) {
     const code = key.charCodeAt(i);
     const isUpper = code >= 65 && code <= 90;
     const isNum = code >= 48 && code <= 57;
     const isUnderscore = code === 95;
-    
+
     if (!isUpper && !isNum && !isUnderscore) return false;
   }
-  
+
   return true;
 }
 
@@ -114,15 +114,32 @@ export async function deleteSecret(projectId: string, key: string): Promise<void
   await prisma.secret.deleteMany({ where: { projectId, key } });
 }
 
+type EncryptedSecret = Encrypted & { key: string };
+
+async function encryptedSecrets(projectId: string): Promise<EncryptedSecret[]> {
+  try {
+    const records = await prisma.secret.findMany({
+      where: { projectId },
+      select: { key: true, ciphertext: true, iv: true, authTag: true },
+    });
+    await redis.set(secretsCacheKey(projectId), JSON.stringify(records)).catch(() => {});
+    return records;
+  } catch (error) {
+    const cached = await redis.get(secretsCacheKey(projectId)).catch(() => null);
+    if (!cached) throw error;
+    console.log('[SECRETS_POSTGRES_UNAVAILABLE] using cached ciphertexts , ', String(error).slice(0, 160));
+    return JSON.parse(cached) as EncryptedSecret[];
+  }
+}
+
 async function resolveSecrets(projectId: string): Promise<Record<string, string>> {
-  const records = await prisma.secret.findMany({ where: { projectId } });
+  const records = await encryptedSecrets(projectId);
   const out: Record<string, string> = {};
 
   for (const record of records) {
     try {
       out[record.key] = decrypt(record);
     } catch (error) {
-
       console.log('[SECRET_DECRYPT_FAILED] , ', record.key, String(error).slice(0, 120));
     }
   }
@@ -137,12 +154,15 @@ export async function registerSecretsForRedaction(projectId: string): Promise<vo
   registerSecrets(projectId, Object.values(secrets));
 }
 
-export async function applySecretsToSandbox(projectId: string): Promise<string[]> {
+export async function applySecretsToSandbox(
+  projectId: string,
+  removed: string[] = [],
+): Promise<string[]> {
   if (!isSecretsConfigured()) return [];
 
   const secrets = await resolveSecrets(projectId);
   registerSecrets(projectId, Object.values(secrets));
-  await injectSecrets(projectId, secrets);
+  await injectSecrets(projectId, secrets, removed);
 
   return Object.keys(secrets);
 }

@@ -1,9 +1,11 @@
 'use client';
 
+import { Check, Plus, Trash } from '@phosphor-icons/react';
 import { useEffect, useMemo, useState } from 'react';
 import { fetchSecrets, removeSecret, saveSecretsBatch } from '@/lib/api';
 import { useToken } from '@/lib/useToken';
 import type { RequiredSecret, SecretSummary } from '@/lib/types';
+import Modal from './Modal';
 
 export default function SecretsPanel({
   projectId,
@@ -26,6 +28,7 @@ export default function SecretsPanel({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedNote, setSavedNote] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -44,7 +47,7 @@ export default function SecretsPanel({
     }
     for (const key of extraKeys) {
       if (!savedKeys.has(key) && !rows.some((r) => r.key === key)) {
-        rows.push({ key, reason: 'added by you' });
+        rows.push({ key, reason: '' });
       }
     }
     return rows;
@@ -61,6 +64,7 @@ export default function SecretsPanel({
     }
     setNewKey('');
     setNewValue('');
+    setAdding(false);
   }
 
   async function submit() {
@@ -92,10 +96,10 @@ export default function SecretsPanel({
       setExtraKeys((prev) => prev.filter((key) => !accepted.has(key)));
 
       if (result.rejected.length > 0) {
-        setError(result.rejected.map((r) => `${r.key}: ${r.msg}`).join(' · '));
+        setError(result.rejected.map((r) => `${r.key}: ${r.msg}`).join('. '));
       }
       if (accepted.size > 0) {
-        setSavedNote(`Saved ${accepted.size} — dev server restarted.`);
+        setSavedNote(`Saved ${accepted.size === 1 ? 'it' : `all ${accepted.size}`}. Your app is restarting.`);
         onSaved?.([...accepted]);
         setTimeout(() => {
           onClose();
@@ -114,194 +118,114 @@ export default function SecretsPanel({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[85vh] w-full max-w-xl flex-col overflow-hidden rounded-[24px] border shadow-2xl transition-all relative"
-        style={{ background: 'var(--panel)', borderColor: 'var(--line)' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          onClick={onClose}
-          className="absolute top-5 right-5 text-white/40 hover:text-white transition"
-          title="Close"
-        >
-          ✕
-        </button>
-
-        <div
-          className="flex flex-col items-center justify-center border-b px-6 pt-8 pb-6 text-center"
-          style={{ borderColor: 'var(--line)' }}
-        >
-          <h2 className="font-heading text-[24px] uppercase tracking-wider text-white">
-            Project Secrets
-          </h2>
-          <p className="mt-2 text-[14px] text-white/50 leading-relaxed max-w-[400px]">
-            Injected as environment variables. Values are encrypted and never shown in plaintext again.
-          </p>
-        </div>
-
-        <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-6">
-          {!enabled && (
-            <div className="rounded-xl border px-4 py-3 text-[13px] text-white/70" style={{ background: 'var(--error-bg)', borderColor: 'var(--error)' }}>
-              Secrets storage is disabled on the server — <code className="font-mono text-white">SECRETS_MASTER_KEY</code> is not set.
-            </div>
-          )}
-
-          {secrets.length > 0 && (
-            <div className="space-y-2">
-              <ColumnHeader left="Variable" right="Value" />
-              {secrets.map((secret) => (
-                <div
-                  key={secret.key}
-                  className="flex items-center gap-3 rounded-xl border px-4 py-3"
-                  style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
-                >
-                  <code className="w-1/2 shrink-0 truncate font-mono text-[13px] text-white">{secret.key}</code>
-                  <span className="flex-1 font-mono text-[13px]" style={{ color: 'var(--muted)' }}>
-                    {secret.maskedPreview}
-                  </span>
-                  <button
-                    onClick={() => remove(secret.key)}
-                    className="shrink-0 text-[11px] text-white/40 hover:text-red-400 transition"
-                    title="Remove"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {pending.length > 0 && (
-            <div className="space-y-3">
-              <ColumnHeader
-                left={`Needed (${pending.length})`}
-                right="Paste the value"
-                highlight
-              />
-              {pending.map((row) => (
-                <div key={row.key} className="space-y-1">
-                  <div className="flex items-center gap-3">
-                    <code
-                      className="w-1/2 shrink-0 truncate rounded-xl border px-4 py-3 font-mono text-[13px] font-semibold"
-                      style={{ borderColor: 'var(--accent)', background: 'var(--accent-soft)', color: 'var(--accent)' }}
-                      title={row.key}
-                    >
-                      {row.key}
-                    </code>
-                    <input
-                      value={drafts[row.key] ?? ''}
-                      onChange={(e) =>
-                        setDrafts((prev) => ({ ...prev, [row.key]: e.target.value }))
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') submit();
-                      }}
-                      type="password"
-                      autoComplete="off"
-                      spellCheck={false}
-                      placeholder="Paste value..."
-                      className="min-w-0 flex-1 rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
-                      style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
-                    />
-                  </div>
-                  {row.reason && (
-                    <p className="pl-1 text-[11px] text-[var(--accent)]">
-                      ↳ {row.reason}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {secrets.length === 0 && pending.length === 0 && (
-            <p className="text-[13px] italic text-center text-white/30 py-4">
-              No secrets yet. The agent will name what it needs as it builds.
-            </p>
-          )}
-
-          <div className="space-y-3 border-t pt-6" style={{ borderColor: 'var(--line)' }}>
-            <span className="block text-[11px] font-bold uppercase tracking-widest text-white/40">
-              Add Custom Secret
-            </span>
-            <div className="flex flex-col sm:flex-row items-center gap-2">
-              <input
-                value={newKey}
-                onChange={(e) => setNewKey(e.target.value)}
-                placeholder="Key (e.g. DATABASE_URL)"
-                spellCheck={false}
-                className="w-full sm:w-1/3 rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
-                style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
-              />
-              <input
-                value={newValue}
-                onChange={(e) => setNewValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') addRow();
-                }}
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="Value..."
-                className="w-full sm:flex-1 rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
-                style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
-              />
-              <button
-                onClick={addRow}
-                disabled={!newKey.trim()}
-                className="btn-secondary whitespace-nowrap"
-              >
-                Add Row
-              </button>
-            </div>
-          </div>
-
-          {error && <p className="text-[13px] text-center text-red-400">{error}</p>}
-          {savedNote && (
-            <p className="text-[13px] text-center text-[var(--accent)]">
-              {savedNote}
-            </p>
-          )}
-        </div>
-
-        <div className="flex flex-col gap-3 shrink-0 border-t p-6" style={{ borderColor: 'var(--line)' }}>
-          <button
-            onClick={submit}
-            disabled={!enabled || saving || filledCount === 0}
-            className="btn-primary w-full"
-          >
-            {saving
-              ? 'Saving & Restarting…'
-              : filledCount === 0
-                ? 'Submit'
-                : `Submit ${filledCount} & Restart Sandbox`}
+    <Modal
+      title="App settings"
+      width="max-w-lg"
+      description={
+        pending.length > 0
+          ? 'Your app needs these to work. Paste each value and save.'
+          : 'Private keys your app uses, like a payments or email key. They are encrypted and never shown again.'
+      }
+      onClose={onClose}
+      footer={
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[12px] text-[var(--muted)]">{savedNote ?? (filledCount > 0 ? 'Your app restarts to use them.' : '')}</p>
+          <button onClick={submit} disabled={!enabled || saving || filledCount === 0} className="btn-primary shrink-0">
+            {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function ColumnHeader({
-  left,
-  right,
-  highlight,
-}: {
-  left: string;
-  right: string;
-  highlight?: boolean;
-}) {
-  return (
-    <div
-      className="flex gap-3 px-1 text-[11px] font-bold uppercase tracking-widest"
-      style={{ color: highlight ? 'var(--accent)' : 'rgba(255, 255, 255, 0.4)' }}
+      }
     >
-      <span className="w-1/2 shrink-0">{left}</span>
-      <span className="flex-1">{right}</span>
-    </div>
+      <div className="space-y-6">
+        {!enabled && (
+          <p className="rounded-[10px] border-2 border-[var(--edge)] bg-[var(--error-card)] px-4 py-3 text-[13px] font-medium leading-relaxed">
+            Saving keys is turned off on this server. Ask whoever runs it to set{' '}
+            <code className="font-mono text-[12px]">SECRETS_MASTER_KEY</code>.
+          </p>
+        )}
+
+        {pending.map((row) => (
+          <div key={row.key}>
+            <label htmlFor={`secret-${row.key}`} className="mb-1.5 block font-mono text-[13px] font-medium">
+              {row.key}
+            </label>
+            <input
+              id={`secret-${row.key}`}
+              value={drafts[row.key] ?? ''}
+              onChange={(e) => setDrafts((prev) => ({ ...prev, [row.key]: e.target.value }))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submit();
+              }}
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Paste your key here"
+              className="field font-mono text-[13px]"
+            />
+            {row.reason && <p className="mt-1.5 text-[12px] leading-relaxed text-[var(--muted)]">{row.reason}</p>}
+          </div>
+        ))}
+
+        {secrets.length > 0 && (
+          <ul className="divide-y-2 divide-[var(--edge)] rounded-[10px] border-2 border-[var(--edge)]">
+            {secrets.map((secret) => (
+              <li key={secret.key} className="flex items-center gap-3 py-2 pl-4 pr-2">
+                <Check size={14} weight="bold" className="shrink-0 text-[var(--accent-text)]" />
+                <code className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{secret.key}</code>
+                <span className="font-mono text-[12px] text-[var(--muted)]">{secret.maskedPreview}</span>
+                <button
+                  onClick={() => remove(secret.key)}
+                  aria-label={`Remove ${secret.key}`}
+                  className="flex h-7 w-7 items-center justify-center rounded-[6px] text-[var(--muted)] transition-colors hover:bg-[var(--tint)] hover:text-[var(--error)]"
+                >
+                  <Trash size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {adding ? (
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              aria-label="Key name"
+              autoFocus
+              value={newKey}
+              onChange={(e) => setNewKey(e.target.value)}
+              placeholder="KEY_NAME"
+              spellCheck={false}
+              className="field font-mono text-[13px] sm:w-[42%]"
+            />
+            <input
+              aria-label="Value"
+              value={newValue}
+              onChange={(e) => setNewValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addRow();
+              }}
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Value"
+              className="field font-mono text-[13px] sm:flex-1"
+            />
+            <button onClick={addRow} disabled={!newKey.trim()} className="btn-secondary shrink-0">
+              Add
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => setAdding(true)} className="btn-ghost btn-sm -ml-2">
+            <Plus size={14} weight="bold" />
+            Add a key yourself
+          </button>
+        )}
+
+        {error && (
+          <p role="alert" className="text-[13px] text-[var(--error)]">
+            {error}
+          </p>
+        )}
+      </div>
+    </Modal>
   );
 }
