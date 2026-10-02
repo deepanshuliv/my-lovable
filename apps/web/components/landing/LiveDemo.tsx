@@ -187,7 +187,8 @@ export default function LiveDemo() {
       </p>
       <div
         aria-hidden="true"
-        className="pointer-events-none flex h-[760px] select-none flex-col overflow-hidden rounded-[16px] border-2 border-[var(--edge)] bg-[var(--cream)] shadow-[var(--hard-lg)] lg:h-[660px]"
+        inert
+        className="pointer-events-none flex h-[640px] sm:h-[760px] select-none flex-col overflow-hidden rounded-[16px] border-2 border-[var(--edge)] bg-[var(--cream)] shadow-[var(--hard-lg)] lg:h-[660px]"
       >
         <FakeHeader state={state} />
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
@@ -228,13 +229,13 @@ export default function LiveDemo() {
         </div>
       </div>
 
-      <div className="mt-5 flex items-center gap-4">
+      <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center">
         <div className="flex shrink-0 gap-1.5">
           <button
             type="button"
             onClick={() => setPlaying(!playing)}
             aria-label={playing ? 'Pause demo' : 'Play demo'}
-            className="flex h-9 w-9 items-center justify-center rounded-[8px] border-2 border-white/80 bg-white text-[#1c1d1a] transition-transform hover:bg-[var(--lime)] active:translate-y-px"
+            className="flex h-11 w-11 items-center justify-center rounded-[8px] border-2 border-white/80 bg-white text-[#1c1d1a] transition-transform hover:bg-[var(--lime)] active:translate-y-px sm:h-9 sm:w-9"
           >
             {playing ? <Pause size={14} weight="fill" /> : <Play size={14} weight="fill" />}
           </button>
@@ -245,12 +246,12 @@ export default function LiveDemo() {
               setPlaying(true);
             }}
             aria-label="Replay demo"
-            className="flex h-9 w-9 items-center justify-center rounded-[8px] border-2 border-white/80 bg-white text-[#1c1d1a] transition-transform hover:bg-[var(--lime)] active:translate-y-px"
+            className="flex h-11 w-11 items-center justify-center rounded-[8px] border-2 border-white/80 bg-white text-[#1c1d1a] transition-transform hover:bg-[var(--lime)] active:translate-y-px sm:h-9 sm:w-9"
           >
             <ArrowCounterClockwise size={14} weight="bold" />
           </button>
         </div>
-        <div className="flex min-w-0 flex-1 gap-2">
+        <div className="flex min-w-0 flex-1 gap-1.5 sm:gap-2">
           {PHASE_MARKS.map((mark, index) => {
             const end = PHASE_MARKS[index + 1]?.at ?? DONE;
             const fill = Math.max(0, Math.min(1, (t - mark.at) / (end - mark.at)));
@@ -260,10 +261,10 @@ export default function LiveDemo() {
                 key={mark.label}
                 type="button"
                 onClick={() => setT(mark.at)}
-                className="group flex min-w-0 flex-1 flex-col gap-1.5 text-left"
+                className="group flex min-h-[40px] min-w-0 flex-1 flex-col justify-end gap-1.5 text-left"
                 aria-label={`Jump to ${mark.label}`}
               >
-                <span className={`truncate text-[11.5px] font-bold uppercase ${current ? 'text-white' : 'text-white/45 group-hover:text-white'}`}>
+                <span className={`truncate text-[10px] font-bold uppercase min-[400px]:text-[11.5px] ${current ? 'text-white' : 'text-white/65 group-hover:text-white'}`}>
                   {mark.label}
                 </span>
                 <span className="relative h-2 overflow-hidden rounded-[3px] bg-white/15">

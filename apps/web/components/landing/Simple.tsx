@@ -3,7 +3,7 @@
 import { ArrowUp, Check, GithubLogo, WarningCircle, Wrench } from '@phosphor-icons/react';
 import { motion, useReducedMotion } from 'motion/react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { EASE, LimeButton } from '@/components/lime';
+import { EASE } from '@/components/lime';
 
 function useTicker(steps: number, ms: number) {
   const ref = useRef<HTMLDivElement>(null);
@@ -132,44 +132,6 @@ function Asks() {
   );
 }
 
-function Watch() {
-  const { ref, step } = useTicker(6, 650);
-  const blocks = [
-    'col-span-6 h-5',
-    'col-span-4 row-span-2 h-[58px]',
-    'col-span-2 row-span-2 h-[58px]',
-    'col-span-2 h-9',
-    'col-span-2 h-9',
-    'col-span-2 h-9',
-  ];
-  return (
-    <Card innerRef={ref} title="Watch it appear, live." body="Every section shows up in the preview as it is written." tone="ink">
-      <div className="grid grid-cols-6 gap-1.5 rounded-[10px] bg-white/[0.06] p-2.5">
-        {blocks.map((cls, index) => (
-          <span
-            key={index}
-            className={`rounded-[5px] transition-all duration-500 ${cls} ${
-              index < step
-                ? index === 1
-                  ? 'bg-white'
-                  : index === 0
-                    ? 'bg-[var(--lime)]'
-                    : 'bg-white/80'
-                : index === step
-                  ? 'build-shimmer border border-dashed border-[var(--lime)]'
-                  : 'border border-dashed border-white/20'
-            }`}
-          />
-        ))}
-      </div>
-      <div className="mt-3 flex items-center gap-2 text-[12px] font-bold uppercase text-[var(--lime)]">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--lime)]" />
-        {step < 5 ? `Building section ${step + 1} of 5` : 'Your app is live'}
-      </div>
-    </Card>
-  );
-}
-
 function Fixes() {
   const { ref, step } = useTicker(4, 1100);
   return (
@@ -271,9 +233,9 @@ function Change() {
   );
 }
 
-export default function Simple({ focusPrompt }: { focusPrompt: () => void }) {
+export default function Simple() {
   return (
-    <section className="mx-auto max-w-[1312px] px-5 py-28 md:px-8 lg:py-36">
+    <section id="how" className="mx-auto max-w-[1312px] scroll-mt-24 px-5 py-36 md:px-8 lg:py-48">
       <motion.div
         initial={{ opacity: 0, y: 24 }}
         whileInView={{ opacity: 1, y: 0 }}
@@ -284,34 +246,19 @@ export default function Simple({ focusPrompt }: { focusPrompt: () => void }) {
         <h2 className="text-[clamp(34px,4vw,52px)] font-bold leading-[1.05] tracking-[-0.03em]">
           We make building your app <span className="rounded-[10px] bg-[var(--lime)] px-2 text-[var(--ink)]">insanely</span> simple.
         </h2>
-        <p className="mt-5 max-w-[52ch] text-[17px] font-medium leading-[1.45] text-[var(--muted)]">
-          Everything that usually needs a developer happens on its own. Here is what that looks like.
+        <p className="mt-6 max-w-[48ch] text-[17px] font-medium leading-[1.5] text-[var(--muted)]">
+          Everything that usually needs a developer happens on its own.
         </p>
       </motion.div>
 
-      <div className="mt-14 grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-6">
-        <div className="lg:col-span-3">
-          <Describe />
-        </div>
-        <div className="lg:col-span-3">
-          <Asks />
-        </div>
-        <div className="lg:col-span-2">
-          <Watch />
-        </div>
-        <div className="lg:col-span-2">
-          <Fixes />
-        </div>
-        <div className="md:col-span-2 lg:col-span-2">
-          <Code />
-        </div>
-        <div className="md:col-span-2 lg:col-span-6">
+      <div className="mt-20 grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
+        <Describe />
+        <Asks />
+        <Fixes />
+        <Code />
+        <div className="md:col-span-2">
           <Change />
         </div>
-      </div>
-
-      <div className="mt-12">
-        <LimeButton onClick={focusPrompt}>Start building</LimeButton>
       </div>
     </section>
   );
