@@ -10,7 +10,12 @@ const clerkConfigured = Boolean(
 const withClerk = clerkMiddleware(async (auth, req) => {
   if (!isProtectedRoute(req)) return;
   const { userId } = await auth();
-  if (!userId) return NextResponse.redirect(new URL('/', req.url));
+  if (!userId) {
+    const target = new URL('/', req.url);
+    target.searchParams.set('sign-in', '1');
+    target.searchParams.set('next', req.nextUrl.pathname + req.nextUrl.search);
+    return NextResponse.redirect(target);
+  }
 });
 
 export default function middleware(req: NextRequest, event: Parameters<typeof withClerk>[1]) {

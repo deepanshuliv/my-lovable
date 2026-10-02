@@ -61,6 +61,20 @@ export default function Landing() {
   }
 
   useEffect(() => {
+    if (!isLoaded) return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('sign-in')) return;
+    const next = params.get('next') ?? '';
+    const safeNext = next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
+    window.history.replaceState(null, '', '/');
+    if (isSignedIn) {
+      router.replace(safeNext);
+      return;
+    }
+    openSignIn({ forceRedirectUrl: safeNext });
+  }, [isLoaded, isSignedIn, openSignIn, router]);
+
+  useEffect(() => {
     if (!isLoaded || !isSignedIn || firedRef.current) return;
 
     const pending = sessionStorage.getItem(PENDING_KEY);
