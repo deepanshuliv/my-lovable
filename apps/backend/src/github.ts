@@ -8,7 +8,7 @@ const clerkClient = createClerkClient({ secretKey: CLERK_SECRET_KEY });
 export async function getGithubToken(userId: string): Promise<string | null> {
   try {
     const response = await clerkClient.users.getUserOauthAccessToken(userId, 'oauth_github');
-    
+
     if (response?.data && response.data.length > 0) {
       return response.data[0]?.token || null;
     }
@@ -51,7 +51,7 @@ export async function createRepository(token: string, name: string, isPrivate: b
     body: JSON.stringify({
       name,
       private: isPrivate,
-      auto_init: true,
+      auto_init: false,
     }),
   });
 
@@ -68,32 +68,54 @@ export async function createRepository(token: string, name: string, isPrivate: b
   };
 }
 
+export type GithubIdentity = { name: string; email: string; login: string };
+
+export async function getGithubIdentity(token: string): Promise<GithubIdentity | null> {
+  try {
+    const response = await fetch('https://api.github.com/user', {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.v3+json' },
+    });
+    if (!response.ok) return null;
+    const user = (await response.json()) as { id: number; login: string; name: string | null };
+    return { login: user.login, name: user.name || user.login, email: `${user.id}+${user.login}@users.noreply.github.com` };
+  } catch {
+    return null;
+  }
+}
+
+export async function isRepositoryEmpty(token: string, repoFullName: string): Promise<boolean> {
+  const response = await fetch(`https://api.github.com/repos/${repoFullName}/commits?per_page=1`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.v3+json' },
+  });
+  return response.status === 409;
+}
+
 export async function pushToGitHub(
   entry: ProjectSandbox,
   repoFullName: string,
   branch: string,
   token: string,
+  author?: GithubIdentity | null,
+  force = true,
 ): Promise<{ commitSha: string }> {
   const { projectId, rootDir } = entry;
 
   await commitBaseline(entry);
 
   const remoteUrl = `https://x-access-token:${token}@github.com/${repoFullName}.git`;
-  const remoteName = `lovable_${Date.now()}`; 
+  const remoteName = `inkling_${Date.now()}`;
 
   try {
-    
     await entry.sandbox.git.add(rootDir, ['.']);
     try {
       await entry.sandbox.git.commit(
         rootDir,
-        'Update from Lovable AI',
-        'my-lovable agent',
-        'agent@my-lovable.local',
-        false 
+        'Update from Inkling',
+        author?.name ?? 'Inkling',
+        author?.email ?? 'agent@inkling.local',
+        false
       );
     } catch (e) {
-      
     }
 
     await executeCommand(projectId, `cd ${rootDir} && git remote add ${remoteName} ${remoteUrl}`);
@@ -105,17 +127,21 @@ export async function pushToGitHub(
       await executeCommand(projectId, `cd ${rootDir} && git checkout -b main`);
     }
 
-    const pushCmd = await executeCommand(projectId, `cd ${rootDir} && git push -u -f ${remoteName} HEAD:refs/heads/${branch}`);
-    
+    const pushCmd = await executeCommand(
+      projectId,
+      `cd ${rootDir} && git push -u ${force ? '-f ' : ''}${remoteName} HEAD:refs/heads/${branch}`,
+    );
+
     if (pushCmd.exitCode !== 0) {
+      if (/rejected|non-fast-forward|fetch first/i.test(pushCmd.output)) {
+        throw new Error('The repository has changes that were made outside Inkling. Pick a new repository, or bring those changes in first.');
+      }
       throw new Error(`Git push failed: ${pushCmd.output.slice(-500)}`);
     }
 
     const shaCmd = await executeCommand(projectId, `cd ${rootDir} && git rev-parse HEAD`);
     return { commitSha: shaCmd.output.trim() };
-
   } finally {
-    
     await executeCommand(projectId, `cd ${rootDir} && git remote remove ${remoteName}`).catch(() => {});
   }
 }
@@ -139,7 +165,6 @@ export async function createOrUpdatePullRequest(
   if (listResponse.ok) {
     const prs = await listResponse.json();
     if (prs && prs.length > 0) {
-      
       return {
         prNumber: prs[0].number,
         prUrl: prs[0].html_url,
@@ -158,7 +183,6 @@ export async function createOrUpdatePullRequest(
   const defaultBranch = repoData.default_branch;
 
   if (branch === defaultBranch) {
-    
     return {
       prNumber: null,
       prUrl: null,
@@ -181,9 +205,8 @@ export async function createOrUpdatePullRequest(
   });
 
   if (!createResponse.ok) {
-    
     const errText = await createResponse.text();
-    if (errText.includes('No commits between')) {
+    if (errText.includes('No commits between') || errText.includes('no history in common')) {
       return { prNumber: null, prUrl: null };
     }
     throw new Error(`Failed to create PR: ${createResponse.status} ${errText}`);
