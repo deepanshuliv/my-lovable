@@ -15,6 +15,8 @@ export type StreamEvent = {
     | 'compaction'
     | 'summarization'
     | 'secrets_required'
+    | 'keys_request'
+    | 'keys_status'
     | 'verification'
     | 'client_errors';
   [key: string]: unknown;
@@ -23,6 +25,12 @@ export type StreamEvent = {
 export type AgentMode = 'plan' | 'build';
 
 export type RequiredSecret = { key: string; reason: string };
+
+export type RequestedKey = RequiredSecret & { service: string; helpUrl?: string };
+
+export type KeyRequestStatus = 'pending' | 'verified' | 'declined' | 'expired';
+
+export type KeyCheck = { key: string; status: 'valid' | 'invalid' | 'unchecked' | 'unreachable'; message: string };
 
 export type ChatItem =
   | { kind: 'user'; id: string; text: string }
@@ -34,7 +42,7 @@ export type ChatItem =
   | {
       kind: 'compaction';
       id: string;
-            full: boolean;
+      full: boolean;
       midStream: boolean;
       tokensBefore: number;
       tokensAfter: number;
@@ -43,10 +51,18 @@ export type ChatItem =
     }
     | { kind: 'secrets'; id: string; secrets: RequiredSecret[]; provided: string[] }
     | {
+      kind: 'keys';
+      id: string;
+      requestId: string;
+      service: string;
+      keys: RequestedKey[];
+      status: KeyRequestStatus;
+    }
+    | {
       kind: 'verification';
       id: string;
       ok: boolean;
-            typecheckPassed: boolean | null;
+      typecheckPassed: boolean | null;
       typecheckOutput: string;
       runtimeErrors: string[];
     }

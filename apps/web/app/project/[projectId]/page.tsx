@@ -3,6 +3,10 @@
 import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { UserButton } from '@clerk/nextjs';
+import { CaretLeft, GithubLogo, Sliders } from '@phosphor-icons/react';
+import CreditsPill from '@/components/Credits';
+import ThemeToggle from '@/components/ThemeToggle';
 import ByokModal from '@/components/ByokModal';
 import ChatPanel from '@/components/ChatPanel';
 import PreviewPanel, { type ClientError } from '@/components/PreviewPanel';
@@ -11,6 +15,7 @@ import GitHubPanel from '@/components/GitHubPanel';
 import {
   fetchHealth,
   fetchHistory,
+  listProjects,
   openChatStream,
   deleteMyKey,
   getMyKeys,
@@ -22,15 +27,20 @@ import {
   type HealthInfo,
 } from '@/lib/api';
 import {
-  hasSkippedByok,
+  DEFAULT_PREFERENCE,
   isAuthError,
-  markByokSkipped,
+  isByokProvider,
   getProviderPreference,
   setProviderPreference,
   type ByokProvider,
+  type ProviderPreference,
 } from '@/lib/byok';
+import { START_PROGRESS, advance, fromStage, fromTool, type BuildProgress } from '@/lib/phase';
+import { useCredits } from '@/lib/useCredits';
 import { useToken } from '@/lib/useToken';
-import type { AgentMode, ChatItem, RequiredSecret, StreamEvent } from '@/lib/types';
+import { useSandboxPresence } from '@/lib/useSandboxPresence';
+import { toolTarget } from '@/lib/tools';
+import type { AgentMode, ChatItem, KeyRequestStatus, RequiredSecret, StreamEvent } from '@/lib/types';
 
 export default function ProjectPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params);
@@ -43,6 +53,7 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
   const [busy, setBusy] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [appBuilt, setAppBuilt] = useState(false);
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [githubOpen, setGithubOpen] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -50,31 +61,34 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
     const [stopping, setStopping] = useState(false);
     const [paused, setPaused] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const { credits, refresh: refreshCredits } = useCredits();
+  const [progress, setProgress] = useState<BuildProgress>(START_PROGRESS);
+  const [projectName, setProjectName] = useState<string | null>(null);
     const [mode, setMode] = useState<AgentMode>('build');
     const [draft, setDraft] = useState('');
-  const [byok, setByok] = useState<StoredKey | null>(null);
-  const [byokOpen, setByokOpen] = useState(false);
-  const [providerPref, setProviderPref] = useState<{
-    provider: ByokProvider;
-    usePlatform: boolean;
-  } | null>(null);
+  const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
+  const [savedKeys, setSavedKeys] = useState<StoredKey[]>([]);
+  const [byokFor, setByokFor] = useState<ByokProvider | null>(null);
+  const [providerPref, setProviderPref] = useState<ProviderPreference>(DEFAULT_PREFERENCE);
 
   useEffect(() => {
     setProviderPref(getProviderPreference());
   }, []);
 
+  const choosePreference = useCallback((next: ProviderPreference) => {
+    setProviderPref(next);
+    setProviderPreference(next);
+  }, []);
+
   const handleProviderChange = useCallback(
     (provider: ByokProvider, usePlatform: boolean) => {
-      const newPref = { provider, usePlatform };
-      setProviderPref(newPref);
-      setProviderPreference(newPref);
-
-      // If they switched to BYOK, and they don't have a key yet, prompt them
-      if (!usePlatform && !byok) {
-        setByokOpen(true);
+      if (usePlatform || savedKeys.some((key) => key.provider === provider)) {
+        choosePreference({ provider, usePlatform });
+        return;
       }
+      setByokFor(provider);
     },
-    [byok],
+    [choosePreference, savedKeys],
   );
 
   const streamRef = useRef<ChatStreamHandle | null>(null);
@@ -100,8 +114,7 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       switch (event.type) {
         case 'text': {
           const text = String(event.text ?? '');
-          // The backend re-sends the assembled text with final:true once the turn ends;
-          // the deltas already painted it, so that one is a no-op here.
+
           if (event.final) {
             setItems((prev) =>
               prev.map((item) =>
@@ -124,44 +137,21 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
         }
 
         case 'tool_call': {
-
-          if (event.name === 'question_tool') return;
-          const args = event.args as Record<string, unknown> | undefined;
-          let shortLabel = '';
-          if (event.name === 'write_file') {
-            shortLabel = `write ${args?.path ?? 'file'}`;
-          } else if (event.name === 'edit_file') {
-            shortLabel = `edit ${args?.path ?? 'file'}`;
-          } else if (event.name === 'read_file') {
-            shortLabel = `read ${args?.path ?? 'file'}`;
-          } else if (event.name === 'search_code') {
-            shortLabel = `search "${args?.query ?? ''}"`;
-          } else if (event.name === 'list_dir') {
-            shortLabel = `list ${args?.path ?? '.'}`;
-          } else {
-            const rawCmd = String(args?.comand || args?.command || '');
-            shortLabel = rawCmd
-              ? rawCmd.split('\n')[0]?.slice(0, 45)
-              : args
-                ? JSON.stringify(args).slice(0, 40)
-                : 'command';
-          }
-
-          setStatus(`Executing: ${shortLabel}…`);
-          push({
-            kind: 'tool',
-            id: crypto.randomUUID(),
-            name: String(event.name ?? 'tool'),
-            args: shortLabel,
-          });
+          if (HIDDEN_TOOLS.has(String(event.name))) return;
+          const name = String(event.name ?? 'tool');
+          const target = toolTarget(name, event.args as Record<string, unknown> | undefined);
+          const step = fromTool(name, target);
+          setProgress((current) => advance(current, step));
+          setStatus(step.detail);
+          push({ kind: 'tool', id: crypto.randomUUID(), name, args: target });
           return;
         }
 
         case 'tool_result': {
-          if (event.name === 'question_tool') return;
-          setStatus('Analyzing output & drafting code…');
+          if (HIDDEN_TOOLS.has(String(event.name))) return;
+          setStatus('Thinking about the next step');
+          setProgress((current) => advance(current, { phase: null, detail: 'Thinking about the next step' }));
           setItems((prev) => {
-            
             for (let i = prev.length - 1; i >= 0; i--) {
               const item = prev[i];
               if (item && item.kind === 'tool' && item.result === undefined) {
@@ -201,16 +191,20 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
           return;
         }
 
-        case 'running':
-          setStatus(String(event.stage ?? 'working'));
+        case 'running': {
+          const step = fromStage(String(event.stage ?? ''));
+          setProgress((current) => advance(current, step));
+          setStatus(step.detail);
           return;
+        }
 
         case 'preview_ready':
           setPreviewUrl(String(event.url ?? ''));
           return;
 
         case 'preview_reload':
-
+          setProgress((current) => advance(current, { phase: 4, detail: 'Refreshing your preview' }));
+          setAppBuilt(true);
           setReloadToken((n) => n + 1);
           return;
 
@@ -240,7 +234,25 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
           return;
         }
 
+        case 'keys_request': {
+          const item = keyRequestItem(crypto.randomUUID(), event);
+          if (item) push(item);
+          setStatus(null);
+          return;
+        }
+
+        case 'keys_status': {
+          const status = keyStatus(event.status);
+          setItems((prev) =>
+            prev.map((item) =>
+              item.kind === 'keys' && item.requestId === event.requestId ? { ...item, status } : item,
+            ),
+          );
+          return;
+        }
+
         case 'verification':
+          setProgress((current) => advance(current, { phase: 3, detail: event.ok ? 'Everything checks out' : 'Fixing a problem it found' }));
           push({
             kind: 'verification',
             id: crypto.randomUUID(),
@@ -292,7 +304,8 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       }
       busyRef.current = true;
       setBusy(true);
-      setStatus('connecting');
+      setProgress(START_PROGRESS);
+      setStatus('Getting started');
 
       const token = await getToken();
 
@@ -311,7 +324,7 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
             push({
               kind: 'status',
               id: crypto.randomUUID(),
-              stage: 'stopped — work up to this point was saved',
+              stage: 'Stopped. Everything done so far is saved.',
             });
           }
           stoppingRef.current = false;
@@ -326,6 +339,7 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
           mode: modeRef.current,
           provider: providerPrefRef.current?.provider,
           usePlatform: providerPrefRef.current?.usePlatform,
+          getToken,
         },
       );
     },
@@ -396,6 +410,13 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       if (cancelled) return;
 
       if (history.events.length > 0) {
+        setAppBuilt(
+          history.events.some(
+            (event) =>
+              event.type === 'verification' ||
+              (event.type === 'tool_call' && ['write_file', 'edit_file'].includes(String(event.payload?.name))),
+          ),
+        );
         setItems(replayToItems(history.events));
         oldestSeqRef.current = history.events[0]?.seq ?? null;
       }
@@ -412,16 +433,11 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
     return () => {
       cancelled = true;
     };
-    // Intentionally runs once per project: re-running on `send` identity would restart
-    // the conversation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  // Wake the project sandbox automatically in the background.
   useEffect(() => {
     let handle: ChatStreamHandle | null = null;
 
-    // If there is an initial query, it will wake the sandbox automatically during `send`.
     if (!initialQuery) {
       void (async () => {
         handle = wakeProjectStream(await getToken(), projectId, handleEvent, (error) => {
@@ -434,44 +450,57 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
     return () => {
       if (handle) handle.abort();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  useSandboxPresence({
+    projectId,
+    getToken,
+    onEvent: handleEvent,
+    isBusy: () => busyRef.current,
+    onWaking: () => setStatus('Waking up your workspace'),
+    onAwake: () => {
+      setStatus(null);
+      setReloadToken((n) => n + 1);
+    },
+  });
 
   useEffect(() => {
     fetchHealth().then(setHealth);
   }, []);
 
-  /**
-   * Load whichever key the user has on file.
-   *
-   * A server round trip now, where this used to read `sessionStorage`. The upside is the
-   * point of the change: a key set on any previous visit, in any tab, is already here and
-   * the user is not asked again.
-   */
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      try {
+        const projects = await listProjects(await getToken());
+        if (live) setProjectName(projects.find((project) => project.id === projectId)?.name ?? null);
+      } catch {
+        if (live) setProjectName(null);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [getToken, projectId, busy]);
+
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
       const { keys } = await getMyKeys(await getToken());
       if (cancelled) return;
-
-      if (keys.length > 0) setByok(keys[0]!);
-      else if (!hasSkippedByok()) setByokOpen(true);
+      setSavedKeys(keys);
+      const pref = getProviderPreference();
+      if (!pref.usePlatform && !keys.some((key) => key.provider === pref.provider)) {
+        choosePreference(DEFAULT_PREFERENCE);
+      }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [getToken]);
+  }, [choosePreference, getToken]);
 
-  /**
-   * Fetch the page of history immediately before what is on screen.
-   *
-   * The first load deliberately returns only the most recent page — a project can run to
-   * thousands of events and rendering all of them to show the last ten would be slow for no
-   * benefit. This is how the rest stays reachable: the user scrolls up, asks for more, and
-   * older turns are prepended.
-   */
   const loadEarlier = useCallback(async () => {
     if (loadingEarlier || !hasMore || oldestSeqRef.current === null) return;
 
@@ -480,9 +509,6 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       const page = await fetchHistory(await getToken(), projectId, oldestSeqRef.current);
 
       if (page.events.length > 0) {
-        // Prepended, and the cursor moves to the oldest row we now hold. Setting it from
-        // the response rather than counting locally keeps it correct even if the server
-        // filtered some event types out of the page.
         setItems((prev) => [...replayToItems(page.events), ...prev]);
         oldestSeqRef.current = page.events[0]?.seq ?? oldestSeqRef.current;
       }
@@ -498,42 +524,45 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
     setMode(next);
   }, []);
 
-  const applyByok = useCallback(
-    (key: StoredKey | null) => {
-      // Null means the user chose to skip; remember that so the modal stops reappearing.
-      if (!key) markByokSkipped();
-      setByok(key);
-      setByokOpen(false);
+  const retryLastQuery = useCallback(() => {
+    if (!lastQueryRef.current || busyRef.current) return;
+    const retryQuery = lastQueryRef.current;
+    lastQueryFailedRef.current = false;
 
-      // If a key was provided and the last query failed (e.g. auth error), automatically
-      // restart the turn with the newly provided key without requiring the user to retype!
-      if (key && lastQueryRef.current && !busyRef.current) {
-        const retryQuery = lastQueryRef.current;
-        lastQueryFailedRef.current = false;
-
-        // Clean up the trailing error card from the transcript so it doesn't clutter the chat
-        setItems((prev) => {
-          const last = prev[prev.length - 1];
-          if (
-            last &&
-            (last.kind === 'error' || (last.kind === 'assistant' && isAuthError(last.text)))
-          ) {
-            return prev.slice(0, -1);
-          }
-          return prev;
-        });
-
-        void startTurn(retryQuery, true);
+    setItems((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && (last.kind === 'error' || (last.kind === 'assistant' && isAuthError(last.text)))) {
+        return prev.slice(0, -1);
       }
+      return prev;
+    });
+
+    void startTurn(retryQuery, true);
+  }, [startTurn]);
+
+  const applyByok = useCallback(
+    (key: StoredKey) => {
+      setSavedKeys((prev) => [key, ...prev.filter((item) => item.provider !== key.provider)]);
+      setByokFor(null);
+      if (isByokProvider(key.provider)) {
+        const next = { provider: key.provider, usePlatform: false };
+        choosePreference(next);
+        providerPrefRef.current = next;
+      }
+      if (lastQueryFailedRef.current) retryLastQuery();
     },
-    [startTurn],
+    [choosePreference, retryLastQuery],
   );
 
-  const forgetByok = useCallback(async () => {
-    if (!byok) return;
-    await deleteMyKey(await getToken(), byok.provider);
-    setByok(null);
-  }, [byok, getToken]);
+  const forgetByok = useCallback(
+    async (provider: ByokProvider) => {
+      await deleteMyKey(await getToken(), provider);
+      setSavedKeys((prev) => prev.filter((item) => item.provider !== provider));
+      setByokFor(null);
+      if (!providerPref.usePlatform && providerPref.provider === provider) choosePreference(DEFAULT_PREFERENCE);
+    },
+    [choosePreference, getToken, providerPref],
+  );
 
     const handleClientErrors = useCallback(
     (errors: ClientError[]) => {
@@ -573,103 +602,92 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
   }, []);
 
   useEffect(() => {
-    return () => streamRef.current?.abort();
+    if (!busy) {
+      void refreshCredits();
+      return;
+    }
+    const timer = setInterval(() => void refreshCredits(), 3_000);
+    return () => clearInterval(timer);
+  }, [busy, refreshCredits]);
+
+  useEffect(() => {
+    const leave = () => streamRef.current?.abort();
+    window.addEventListener('pagehide', leave);
+    return () => {
+      window.removeEventListener('pagehide', leave);
+      leave();
+    };
   }, []);
 
   return (
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden">
-      <header
-        className="flex h-12 shrink-0 items-center justify-between border-b px-4"
-        style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}
-      >
-        <div className="flex items-center gap-2">
-          <Link href="/" className="flex items-center gap-2">
-            <span className="font-heading text-[16px] uppercase tracking-wider leading-none">
-              MY-LOVABLE
-            </span>
-            <span className="rounded bg-[var(--accent)] px-1.5 py-0.5 text-[10px] text-black font-extrabold leading-none">
-              AI
-            </span>
+      <header className="flex h-[68px] shrink-0 items-center justify-between gap-4 border-b-2 border-[var(--edge)] bg-[var(--paper)] px-3 md:px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <Link
+            href="/dashboard"
+            aria-label="Back to your projects"
+            title="Back to your projects"
+            className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border-2 border-[var(--edge)] bg-[var(--panel)] shadow-[var(--hard-sm)] transition-[background-color,transform,box-shadow] duration-150 hover:translate-x-[1px] hover:translate-y-[1px] hover:bg-[var(--lime)] hover:shadow-[2px_2px_0_var(--edge)] active:translate-x-[3px] active:translate-y-[3px] active:shadow-none"
+          >
+            <CaretLeft size={16} weight="bold" className="transition-transform duration-200 group-hover:-translate-x-0.5" />
           </Link>
-          <span className="text-xs ml-2" style={{ color: 'var(--muted)' }}>
-            / {projectId.slice(0, 8)}
-          </span>
+          <div className="min-w-0">
+            <h1 className="truncate text-[20px] font-bold leading-tight tracking-[-0.025em]">
+              {projectName ?? 'Untitled project'}
+            </h1>
+            <p className="hidden truncate text-[12.5px] font-medium text-[var(--muted)] sm:flex sm:items-center sm:gap-1.5">
+              {busy && <span className="h-2 w-2 shrink-0 animate-pulse rounded-full border border-[var(--edge)] bg-[var(--lime)]" />}
+              {busy ? progress.detail : appBuilt ? 'Ask for changes in the chat' : 'Describe what you want in the chat'}
+            </p>
+          </div>
         </div>
 
-        {}
-        {health?.model && (
-          <div
-            className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px]"
-            style={{ borderColor: 'var(--line)', color: 'var(--muted)' }}
-            title={`${health.model.provider} — ${health.model.reason} · served by ${health.backendId}`}
-          >
-            <span
-              className="inline-block h-1.5 w-1.5 rounded-full"
-              style={{
-                background: health.model.provider === 'unconfigured' ? '#f87171' : '#4ade80',
-              }}
-            />
-            <span style={{ color: 'var(--text)' }}>{health.model.model}</span>
-            <span>· {health.model.provider}</span>
-          </div>
-        )}
-
-        <div className="flex items-center gap-2">
-          {}
-          {byok ? (
-            <button
-              onClick={() => void forgetByok()}
-              className="flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
-              style={{
-                borderColor: 'var(--accent)',
-                color: 'var(--accent)',
-                background: 'var(--accent-soft)',
-              }}
-              title={`Your ${byok.provider} key (${byok.maskedPreview}) — click to delete it from your account`}
-            >
-              <span>Your Key</span>
-            </button>
-          ) : (
-            <button
-              onClick={() => setByokOpen(true)}
-              className="rounded-full border px-3 py-1 text-[11px] font-semibold tracking-wide transition-all hover:bg-white/5 hover:text-white"
-              style={{ borderColor: 'var(--line-strong)', color: 'var(--muted)' }}
-              title="Run this project on your own API key"
-            >
-              Use my key
-            </button>
-          )}
-
-          <button
-            onClick={() => setGithubOpen(true)}
-            className="flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold tracking-wide transition-all hover:bg-white/5 hover:text-white"
-            style={{ borderColor: 'var(--line-strong)', color: 'var(--muted)' }}
-          >
-            <span>GitHub</span>
-          </button>
-
-          <button
-            onClick={() => setSecretsOpen(true)}
-            className="flex items-center rounded-full border px-3 py-1 text-[11px] font-semibold tracking-wide transition-all hover:bg-white/5 hover:text-white"
-            style={{ borderColor: 'var(--line-strong)', color: 'var(--muted)' }}
-          >
-            <span>Secrets</span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button onClick={() => setSecretsOpen(true)} className="btn-ghost btn-sm relative" title="Keys your app uses, like payments or email">
+            <Sliders size={15} />
+            <span className="hidden lg:inline">App settings</span>
             {requiredSecrets.length > 0 && (
-              <span
-                className="ml-2 flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold text-black"
-                style={{ background: 'var(--accent)' }}
-              >
+              <span className="flex h-5 min-w-5 items-center justify-center rounded-[5px] border-[1.5px] border-[var(--edge)] bg-[var(--lime)] px-1 text-[10.5px] font-bold text-[var(--accent-ink)]">
                 {requiredSecrets.length}
               </span>
             )}
           </button>
+
+          <button onClick={() => setGithubOpen(true)} className="btn-ghost btn-sm" title="Save your code to GitHub">
+            <GithubLogo size={15} weight="fill" />
+            <span className="hidden lg:inline">GitHub</span>
+          </button>
+
+          <ThemeToggle className="hidden sm:flex" />
+          <span className="hidden sm:block">
+            <CreditsPill />
+          </span>
+
+          <span className="ml-1 flex h-9 items-center">
+            <UserButton />
+          </span>
         </div>
       </header>
 
+      <div className="flex shrink-0 gap-1 border-b-2 border-[var(--edge)] bg-[var(--cream)] p-2 md:hidden" role="tablist">
+        {(['chat', 'preview'] as const).map((view) => (
+          <button
+            key={view}
+            role="tab"
+            aria-selected={mobileView === view}
+            onClick={() => setMobileView(view)}
+            className={`flex-1 rounded-[8px] py-2 text-[13px] font-medium capitalize transition-colors ${
+              mobileView === view ? 'border-2 border-[var(--edge)] bg-[var(--lime)] font-bold' : 'border-2 border-transparent text-[var(--muted)]'
+            }`}
+          >
+            {view}
+          </button>
+        ))}
+      </div>
+
       <div className="flex min-h-0 flex-1">
         <div
-          className="flex w-[420px] shrink-0 flex-col border-r"
-          style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}
+          className={`${mobileView === 'chat' ? 'flex' : 'hidden'} w-full shrink-0 flex-col border-[var(--edge)] bg-[var(--paper)] md:flex md:w-[380px] md:border-r-2 xl:w-[440px]`}
         >
           <ChatPanel
             items={items}
@@ -686,7 +704,7 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
             onStop={stopTurn}
             onResumeQueue={resumeQueue}
             onOpenSecrets={() => setSecretsOpen(true)}
-            onOpenByok={() => setByokOpen(true)}
+            onOpenByok={() => setByokFor(providerPref.usePlatform ? 'openrouter' : providerPref.provider)}
             hasEarlier={hasMore}
             loadingEarlier={loadingEarlier}
             onLoadEarlier={() => void loadEarlier()}
@@ -694,15 +712,20 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
             setDraft={setDraft}
             providerPref={providerPref}
             onProviderChange={handleProviderChange}
+            platformCreditsLeft={credits?.remainingUnits ?? null}
+            savedKeyProviders={savedKeys.map((key) => key.provider)}
           />
         </div>
 
-        <div className="min-w-0 flex-1 p-3">
+        <div className={`${mobileView === 'preview' ? 'block' : 'hidden'} min-w-0 flex-1 bg-[var(--cream)] p-2 md:block md:p-4`}>
           <PreviewPanel
             url={previewUrl}
             reloadToken={reloadToken}
             onManualReload={() => setReloadToken((n) => n + 1)}
             onClientErrors={handleClientErrors}
+            building={busy}
+            progress={progress}
+            appBuilt={appBuilt}
           />
         </div>
       </div>
@@ -719,11 +742,25 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       {githubOpen && (
         <GitHubPanel
           projectId={projectId}
+          projectName={projectName}
           onClose={() => setGithubOpen(false)}
+          onConnectDatabase={() => {
+            setGithubOpen(false);
+            setDraft('Connect a real database to my website so nothing gets lost.');
+          }}
         />
       )}
 
-      {byokOpen && <ByokModal models={health?.byokModels} onDone={applyByok} />}
+      {byokFor && (
+        <ByokModal
+          initialProvider={byokFor}
+          models={health?.byokModels}
+          saved={savedKeys}
+          onSaved={applyByok}
+          onClose={() => setByokFor(null)}
+          onForget={(provider) => void forgetByok(provider)}
+        />
+      )}
     </div>
   );
 }
@@ -732,6 +769,7 @@ function replayToItems(
   events: { seq: number; type: string; payload: Record<string, unknown> }[],
 ): ChatItem[] {
   const items: ChatItem[] = [];
+  let skipResult = false;
 
   for (const event of events) {
     const payload = event.payload ?? {};
@@ -746,16 +784,24 @@ function replayToItems(
         streaming: false,
       });
     } else if (event.type === 'tool_call') {
-      if (payload.name === 'question_tool') continue;
-      const args = payload.args as Record<string, unknown> | undefined;
+      if (HIDDEN_TOOLS.has(String(payload.name))) continue;
+      if (JSON.stringify(payload.args ?? {}).includes('.agents/')) {
+        skipResult = true;
+        continue;
+      }
+      const name = String(payload.name ?? 'tool');
       items.push({
         kind: 'tool',
         id: `e${event.seq}`,
-        name: String(payload.name ?? 'tool'),
-        args: String(args?.comand ?? JSON.stringify(args ?? {})),
+        name,
+        args: toolTarget(name, payload.args as Record<string, unknown> | undefined),
       });
     } else if (event.type === 'tool_result') {
-      if (payload.name === 'question_tool') continue;
+      if (HIDDEN_TOOLS.has(String(payload.name))) continue;
+      if (skipResult) {
+        skipResult = false;
+        continue;
+      }
       for (let i = items.length - 1; i >= 0; i--) {
         const item = items[i];
         if (item && item.kind === 'tool' && item.result === undefined) {
@@ -787,6 +833,17 @@ function replayToItems(
         : [];
       if (secrets.length > 0) {
         items.push({ kind: 'secrets', id: `e${event.seq}`, secrets, provided: [] });
+      }
+    } else if (event.type === 'keys_request') {
+      const item = keyRequestItem(`e${event.seq}`, payload);
+      if (item) items.push(item);
+    } else if (event.type === 'keys_status') {
+      for (let i = items.length - 1; i >= 0; i--) {
+        const item = items[i];
+        if (item && item.kind === 'keys' && item.requestId === payload.requestId) {
+          items[i] = { ...item, status: keyStatus(payload.status) };
+          break;
+        }
       }
     } else if (event.type === 'verification') {
       items.push({
@@ -835,4 +892,30 @@ function replayToItems(
   }
 
   return items;
+}
+
+const HIDDEN_TOOLS = new Set(['question_tool', 'request_api_keys']);
+
+function keyStatus(value: unknown): KeyRequestStatus {
+  return value === 'verified' || value === 'declined' || value === 'expired' ? value : 'pending';
+}
+
+function keyRequestItem(id: string, payload: Record<string, unknown>): ChatItem | null {
+  const keys = Array.isArray(payload.keys)
+    ? (payload.keys as Record<string, unknown>[]).map((key) => ({
+        key: String(key.key ?? ''),
+        reason: String(key.reason ?? ''),
+        service: String(key.service ?? 'Service key'),
+        helpUrl: typeof key.helpUrl === 'string' ? key.helpUrl : undefined,
+      }))
+    : [];
+  if (keys.length === 0) return null;
+  return {
+    kind: 'keys',
+    id,
+    requestId: String(payload.requestId ?? ''),
+    service: String(payload.service ?? ''),
+    keys,
+    status: 'pending',
+  };
 }

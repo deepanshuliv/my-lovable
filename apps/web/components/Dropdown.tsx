@@ -37,7 +37,7 @@ export default function Dropdown({
         setOpen(false);
       }
     }
-    
+
     function handleEscape(event: KeyboardEvent) {
       if (event.key === 'Escape') setOpen(false);
     }
@@ -60,63 +60,39 @@ export default function Dropdown({
 
       {open && (
         <div
-          className={`absolute z-50 rounded-xl border shadow-xl backdrop-blur-xl ${
-            direction === 'up' ? `bottom-full mb-2 origin-bottom-${align}` : `mt-2 origin-top-${align}`
+          role="menu"
+          className={`rise-in absolute z-[var(--z-modal)] overflow-hidden rounded-[12px] border-2 border-[var(--edge)] bg-[var(--panel)] shadow-[var(--hard)] ${
+            direction === 'up' ? 'bottom-full mb-2' : 'top-full mt-2'
           }`}
-          style={{
-            [align]: 0,
-            background: 'rgba(10, 10, 11, 0.95)',
-            borderColor: 'var(--line-strong)',
-            minWidth: width,
-            animation: `dropdown-in-${direction} 0.15s ease-out`,
-          }}
+          style={{ [align]: 0, minWidth: width }}
         >
-          <div className="py-1.5 flex flex-col gap-1 max-h-[300px] overflow-y-auto">
+          <div className="flex max-h-[320px] flex-col overflow-y-auto p-1.5">
             {groups.map((group, groupIndex) => (
               <div key={groupIndex}>
-                {group.title && (
-                  <div className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                    {group.title}
-                  </div>
-                )}
+                {group.title && <div className="px-2.5 pb-1 pt-2 text-[11.5px] font-medium text-[var(--faint)]">{group.title}</div>}
                 {group.items.map((item) => (
                   <button
                     key={item.id}
+                    role="menuitem"
                     onClick={() => {
                       item.onClick();
                       setOpen(false);
                     }}
-                    className="w-full text-left flex flex-col px-3 py-1.5 transition-colors hover:bg-zinc-800/50"
+                    className="flex w-full items-start gap-2.5 rounded-[9px] px-2.5 py-2 text-left transition-colors hover:bg-[var(--lime)]"
                   >
-                    <div className="flex items-center gap-2">
-                      {item.icon && <span className="flex-shrink-0 w-4">{item.icon}</span>}
-                      <span className="text-xs font-medium text-zinc-200">{item.label}</span>
-                    </div>
-                    {item.secondary && (
-                      <div className="text-[10px] text-zinc-500 mt-0.5" style={{ paddingLeft: item.icon ? '1.5rem' : '0' }}>
-                        {item.secondary}
-                      </div>
-                    )}
+                    {item.icon && <span className="mt-0.5 flex w-[13px] shrink-0 justify-center">{item.icon}</span>}
+                    <span className="min-w-0">
+                      <span className="block text-[13px] font-medium text-[var(--text)]">{item.label}</span>
+                      {item.secondary && <span className="mt-0.5 block text-[12px] text-[var(--muted)]">{item.secondary}</span>}
+                    </span>
                   </button>
                 ))}
-                {groupIndex < groups.length - 1 && (
-                  <div className="h-px bg-zinc-800/60 my-1.5 mx-2" />
-                )}
+                {groupIndex < groups.length - 1 && <div className="mx-2 my-1.5 h-px bg-[var(--line)]" />}
               </div>
             ))}
           </div>
         </div>
       )}
-      <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes dropdown-in-down {
-          from { opacity: 0; transform: scale(0.95) translateY(-5px); }
-          to { opacity: 1; transform: scale(1) translateY(0); }
-        }
-        @keyframes dropdown-in-up {
-          from { opacity: 0; transform: scale(0.95) translateY(5px); }
-          to { opacity: 1; transform: scale(1) translateY(0); }
-        }
-      `}} />
     </div>
   );
 }

@@ -1,91 +1,118 @@
 import type { Metadata } from 'next';
 import { ClerkProvider } from '@clerk/nextjs';
-import { Anton, Permanent_Marker, Plus_Jakarta_Sans } from 'next/font/google';
+import { Geist_Mono, Sedgwick_Ave } from 'next/font/google';
+import localFont from 'next/font/local';
+import { THEME_BOOT } from '@/lib/theme';
 import './globals.css';
 
-const fontHeading = Anton({
+const satoshi = localFont({
+  src: [
+    { path: './fonts/Satoshi-500.woff2', weight: '500' },
+    { path: './fonts/Satoshi-700.woff2', weight: '700' },
+    { path: './fonts/Satoshi-900.woff2', weight: '900' },
+  ],
+  display: 'swap',
+  variable: '--font-satoshi',
+});
+
+const scrawl = Sedgwick_Ave({
   weight: '400',
   subsets: ['latin'],
   display: 'swap',
-  variable: '--font-heading',
+  variable: '--font-scrawl',
 });
 
-const fontHandwritten = Permanent_Marker({
-  weight: '400',
+const fontCode = Geist_Mono({
   subsets: ['latin'],
   display: 'swap',
-  variable: '--font-handwritten',
-});
-
-const fontBody = Plus_Jakarta_Sans({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-body',
+  variable: '--font-code',
 });
 
 export const metadata: Metadata = {
-  title: 'my-lovable',
-  description: 'Describe an app, watch it get built.',
-  icons: {
-    icon: '/logo.jpg',
+  title: 'Inkling: from an idea to a working app',
+  description:
+    'Describe your idea in plain words. Inkling writes real code, runs it, and develops a working app in front of you.',
+};
+
+const clerkAppearance = {
+  variables: {
+    colorPrimary: '#c6fd50',
+    colorPrimaryForeground: '#1c1d1a',
+    colorBackground: '#ffffff',
+    colorForeground: '#1c1d1a',
+    colorMuted: '#f3f2ea',
+    colorMutedForeground: '#5d5e58',
+    colorNeutral: '#1c1d1a',
+    colorInput: '#ffffff',
+    colorInputForeground: '#1c1d1a',
+    colorBorder: '#1c1d1a',
+    colorRing: 'rgba(198,253,80,0.6)',
+    colorDanger: '#d93b2b',
+    colorSuccess: '#2f9e44',
+    colorWarning: '#b57900',
+    colorShadow: 'rgba(28,29,26,0.16)',
+    colorModalBackdrop: 'rgba(28,29,26,0.55)',
+    fontFamily: 'var(--font-satoshi), ui-sans-serif, system-ui, sans-serif',
+    fontFamilyButtons: 'var(--font-satoshi), ui-sans-serif, system-ui, sans-serif',
+    borderRadius: '10px',
+  },
+  elements: {
+    cardBox: {
+      border: '2px solid #1c1d1a',
+      boxShadow: '6px 6px 0 #1c1d1a',
+      borderRadius: '18px',
+    },
+    headerTitle: { fontWeight: 700, letterSpacing: '-0.02em' },
+    formButtonPrimary: {
+      border: '2px solid #1c1d1a',
+      boxShadow: '3px 3px 0 #1c1d1a',
+      fontWeight: 700,
+      textTransform: 'uppercase',
+      letterSpacing: '0.02em',
+    },
+    socialButtonsBlockButton: { border: '2px solid #1c1d1a' },
+    formFieldInput: { borderWidth: '2px' },
+    footerActionLink: { color: '#1c1d1a', fontWeight: 700, textDecoration: 'underline' },
+    modalBackdrop: { backdropFilter: 'blur(4px)' },
+    userButtonPopoverCard: {
+      border: '2px solid #1c1d1a',
+      boxShadow: '5px 5px 0 #1c1d1a',
+      borderRadius: '14px',
+    },
+    avatarBox: { borderRadius: '8px', border: '2px solid #1c1d1a' },
   },
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+function ClerkNotConfigured({ fonts }: { fonts: string }) {
   return (
-    <ClerkProvider
-      appearance={{
-        elements: {
-          card: {
-            backgroundColor: '#0a0a0b',
-            border: '1px solid rgba(255,255,255,0.1)',
-            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-          },
-          headerTitle: { color: '#ffffff' },
-          headerSubtitle: { color: '#a1a1aa' },
-          socialButtonsBlockButton: {
-            backgroundColor: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(255,255,255,0.1)',
-            color: '#ffffff',
-          },
-          socialButtonsBlockButtonText: { color: '#ffffff', fontWeight: '500' },
-          dividerLine: { background: 'rgba(255,255,255,0.1)' },
-          dividerText: { color: '#a1a1aa' },
-          formFieldLabel: { color: '#ffffff' },
-          formFieldInput: {
-            backgroundColor: 'rgba(255,255,255,0.03)',
-            borderColor: 'rgba(255,255,255,0.1)',
-            color: '#ffffff',
-          },
-          formButtonPrimary: {
-            backgroundColor: '#ffffff',
-            color: '#000000',
-            textTransform: 'uppercase',
-            fontWeight: '700',
-            letterSpacing: '0.05em'
-          },
-          footerActionLink: { color: '#ffffff', fontWeight: '600' },
-          footerActionText: { color: '#a1a1aa' },
-          footer: {
-            background: 'transparent',
-            borderTop: '1px solid rgba(255,255,255,0.1)'
-          },
-          userButtonPopoverCard: {
-            backgroundColor: '#0a0a0b',
-            border: '1px solid rgba(255,255,255,0.1)',
-            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-          },
-          userPreviewMainIdentifier: { color: '#ffffff', fontWeight: '600' },
-          userPreviewSecondaryIdentifier: { color: '#a1a1aa' },
-          userButtonPopoverActionButton: { color: '#ffffff' },
-          userButtonPopoverActionButtonText: { color: '#ffffff' },
-          userButtonPopoverActionButtonIconBox: { color: '#ffffff' },
-          userButtonPopoverFooter: { background: 'transparent' }
-        }
-      }}
-    >
-      <html lang="en" className={`${fontHeading.variable} ${fontHandwritten.variable} ${fontBody.variable}`}>
-        <body className="font-sans antialiased">{children}</body>
+    <html lang="en" className={fonts}>
+      <body className="font-sans">
+        <main className="flex min-h-[100dvh] items-center justify-center p-6 text-center">
+          <div className="max-w-md space-y-3">
+            <h1 className="text-2xl font-bold tracking-tight">Sign-in is not set up yet</h1>
+            <p className="text-sm text-[var(--muted)]">
+              Add NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY to .env, then restart the web app.
+            </p>
+          </div>
+        </main>
+      </body>
+    </html>
+  );
+}
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const fonts = `${satoshi.variable} ${scrawl.variable} ${fontCode.variable}`;
+  if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) return <ClerkNotConfigured fonts={fonts} />;
+
+  return (
+    <ClerkProvider appearance={clerkAppearance}>
+      <html lang="en" className={fonts} suppressHydrationWarning>
+        <head>
+          <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
+        </head>
+        <body className="font-sans">
+          {children}
+        </body>
       </html>
     </ClerkProvider>
   );

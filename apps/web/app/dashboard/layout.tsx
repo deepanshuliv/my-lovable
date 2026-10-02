@@ -1,27 +1,24 @@
-import Sidebar from '@/components/Sidebar';
+import { UserButton } from '@clerk/nextjs';
+import CreditsPill from '@/components/Credits';
+import ThemeToggle from '@/components/ThemeToggle';
+import { Logo } from '@/components/lime';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-screen w-full overflow-hidden" style={{ backgroundColor: 'var(--bg)' }}>
-      {}
-      <div className="hidden md:block">
-        <Sidebar />
-      </div>
-
-      {}
-      <main className="flex-1 overflow-y-auto">
-        {}
-        <div className="md:hidden flex items-center justify-between p-4 border-b" style={{ borderColor: 'var(--line)' }}>
+    <div className="min-h-[100dvh] bg-[var(--paper)]">
+      <header className="sticky top-0 z-[var(--z-sticky)] border-b-2 border-[var(--edge)] bg-[var(--paper)]">
+        <div className="mx-auto flex h-[72px] w-full max-w-[1200px] items-center justify-between px-5 md:px-8">
+          <Logo href="/" />
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded bg-[var(--panel-2)] border" style={{ borderColor: 'var(--line)' }}>
-               <span className="font-heading text-xs uppercase text-white tracking-wider leading-none">ML</span>
-            </div>
+            <ThemeToggle />
+            <CreditsPill />
+            <span className="flex h-9 items-center">
+              <UserButton />
+            </span>
           </div>
-          {}
         </div>
-
-        {children}
-      </main>
+      </header>
+      <main>{children}</main>
     </div>
   );
 }
