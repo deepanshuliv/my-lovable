@@ -1,18 +1,19 @@
 import { prisma } from '@repo/db';
+import { redis, userKeyCacheKey } from '@repo/redis';
 import { maskPreview } from '@repo/shared';
 import { decrypt, encrypt, isSecretsConfigured } from './utils/secrets';
-import type { ProviderOverride } from './providers';
+import type { ByokProviderName, ProviderOverride } from './providers';
 
 export type UserKeySummary = {
-  provider: 'openrouter' | 'gemini';
+  provider: ByokProviderName;
   maskedPreview: string;
   model: string | null;
   updatedAt: string;
 };
 
-const PROVIDERS = ['openrouter', 'gemini'] as const;
+const PROVIDERS = ['openrouter', 'openai', 'anthropic', 'gemini', 'deepseek'] as const;
 
-export function isProvider(value: unknown): value is 'openrouter' | 'gemini' {
+export function isProvider(value: unknown): value is ByokProviderName {
   return typeof value === 'string' && (PROVIDERS as readonly string[]).includes(value);
 }
 
@@ -22,7 +23,7 @@ export function isUserKeyStorageConfigured(): boolean {
 
 export async function saveUserKey(
   userId: string,
-  provider: 'openrouter' | 'gemini',
+  provider: ByokProviderName,
   apiKey: string,
   model?: string | null,
 ): Promise<UserKeySummary> {
@@ -38,6 +39,8 @@ export async function saveUserKey(
     update: { ciphertext, iv, authTag, maskedPreview, model: model ?? null },
     select: { provider: true, maskedPreview: true, model: true, updatedAt: true },
   });
+
+  await redis.del(userKeyCacheKey(userId)).catch(() => {});
 
   return {
     provider,
@@ -55,20 +58,35 @@ export async function listUserKeys(userId: string): Promise<UserKeySummary[]> {
   });
 
   return rows.filter((row) => isProvider(row.provider)).map((row) => ({
-    provider: row.provider as 'openrouter' | 'gemini',
+    provider: row.provider as ByokProviderName,
     maskedPreview: row.maskedPreview,
     model: row.model,
     updatedAt: row.updatedAt.toISOString(),
   }));
 }
 
-export async function loadUserKey(userId: string): Promise<ProviderOverride | null> {
+export async function loadUserKey(userId: string, provider?: ByokProviderName): Promise<ProviderOverride | null> {
   if (!isUserKeyStorageConfigured()) return null;
 
-  const row = await prisma.userProviderKey.findFirst({
-    where: { userId },
-    orderBy: { updatedAt: 'desc' },
-  });
+  type CachedKey = { provider: string; ciphertext: string; iv: string; authTag: string; model: string | null };
+  let row: CachedKey | null;
+  try {
+    row = await prisma.userProviderKey.findFirst({
+      where: provider ? { userId, provider } : { userId },
+      orderBy: { updatedAt: 'desc' },
+      select: { provider: true, ciphertext: true, iv: true, authTag: true, model: true },
+    });
+    if (!provider) {
+      if (row) await redis.set(userKeyCacheKey(userId), JSON.stringify(row)).catch(() => {});
+      else await redis.del(userKeyCacheKey(userId)).catch(() => {});
+    }
+  } catch (error) {
+    const cached = await redis.get(userKeyCacheKey(userId)).catch(() => null);
+    if (cached === null) throw error;
+    console.log('[USER_KEY_POSTGRES_UNAVAILABLE] using cached ciphertext');
+    row = JSON.parse(cached) as CachedKey;
+    if (provider && row.provider !== provider) throw error;
+  }
 
   if (!row || !isProvider(row.provider)) return null;
 
@@ -84,10 +102,41 @@ export async function loadUserKey(userId: string): Promise<ProviderOverride | nu
   }
 }
 
-export async function deleteUserKey(userId: string, provider: 'openrouter' | 'gemini') {
+export async function deleteUserKey(userId: string, provider: ByokProviderName) {
+  await redis.del(userKeyCacheKey(userId)).catch(() => {});
   await prisma.userProviderKey
     .delete({ where: { userId_provider: { userId, provider } } })
     .catch(() => {
-      
     });
+}
+
+export type KeyCheckResult = { ok: true } | { ok: false; message: string };
+
+const KEY_CHECKS: Partial<Record<ByokProviderName, (key: string) => Promise<Response>>> = {
+  openrouter: (key) => fetch('https://openrouter.ai/api/v1/key', { headers: { Authorization: `Bearer ${key}` } }),
+  openai: (key) => fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${key}` } }),
+  anthropic: (key) =>
+    fetch('https://api.anthropic.com/v1/models', {
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+    }),
+  gemini: (key) => fetch('https://generativelanguage.googleapis.com/v1beta/models', { headers: { 'x-goog-api-key': key } }),
+  deepseek: (key) => fetch('https://api.deepseek.com/models', { headers: { Authorization: `Bearer ${key}` } }),
+};
+
+export async function checkProviderKey(provider: ByokProviderName, apiKey: string): Promise<KeyCheckResult> {
+  const check = KEY_CHECKS[provider];
+  if (!check) return { ok: true };
+
+  let response: Response;
+  try {
+    response = await check(apiKey.trim());
+  } catch (error) {
+    console.log('[USER_KEY_CHECK_UNREACHABLE] , ', provider, String(error).slice(0, 120));
+    return { ok: true };
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, message: 'That key was not accepted. Copy it again from your provider and paste the whole key.' };
+  }
+  return { ok: true };
 }

@@ -9,12 +9,11 @@ import {
   type ConversationPart,
   type FileOps,
 } from '../compaction';
-import { looksLikeError, type ModelProvider, type ProviderEvent, type RunOptions, type ToolSpec } from './types';
+import { addUsage, createUsage, looksLikeError, type ModelProvider, type ProviderEvent, type RunOptions, type ToolSpec } from './types';
 
 let client: GoogleGenAI | null = null;
 
 function getClient(): GoogleGenAI {
-
   if (!client) client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   return client;
 }
@@ -28,11 +27,23 @@ function toGeminiTools(tools: ToolSpec[]): any[] {
   }));
 }
 
+type GeminiUsage = { total_input_tokens?: number; total_output_tokens?: number };
+
+function usageOf(event: any): GeminiUsage | null {
+  return event?.usage ?? event?.interaction?.usage ?? null;
+}
+
 export class GeminiProvider implements ModelProvider {
   readonly name = 'gemini' as const;
   readonly model: string;
   readonly contextWindow: number;
     private readonly ownClient: GoogleGenAI | null;
+
+  readonly usage = createUsage();
+
+  private recordUsage(usage: GeminiUsage | null) {
+    if (usage) addUsage(this.usage, usage.total_input_tokens ?? 0, usage.total_output_tokens ?? 0);
+  }
 
   constructor(model: string, contextWindow = 1_000_000, apiKey?: string) {
     this.model = model;
@@ -51,7 +62,7 @@ export class GeminiProvider implements ModelProvider {
   }
 
     async complete(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string> {
-
+    this.usage.requests++;
     const stream = (await this.client().interactions.create({
       model: this.model,
       input: [{ type: 'user_input', content: [{ text: userPrompt, type: 'text' }] }],
@@ -62,11 +73,14 @@ export class GeminiProvider implements ModelProvider {
     } as any)) as unknown as AsyncIterable<any>;
 
     let text = '';
+    let streamUsage: GeminiUsage | null = null;
     for await (const event of stream) {
+      streamUsage = usageOf(event) ?? streamUsage;
       if (event.event_type === 'step.delta' && event.delta.type === 'text') {
         text += event.delta.text;
       }
     }
+    this.recordUsage(streamUsage);
     return text;
   }
 
@@ -133,7 +147,7 @@ export class GeminiProvider implements ModelProvider {
     let previousInteractionId: string | undefined;
     let turns = 0;
 
-        const state = {
+    const state = {
       transcript: [{ role: 'user', content: openingText }] as ConversationPart[],
       fileOps: createFileOps(),
       previousSummary: undefined as string | undefined,
@@ -158,11 +172,11 @@ export class GeminiProvider implements ModelProvider {
         return;
       }
       if (restart) {
-        
         previousInteractionId = undefined;
         nextInput = [{ type: 'user_input', content: [{ text: restart, type: 'text' }] }];
       }
 
+      this.usage.requests++;
       const stream = await this.client().interactions.create({
         model: this.model,
         input: nextInput,
@@ -177,8 +191,10 @@ export class GeminiProvider implements ModelProvider {
       let finished = false;
       let assistantText = '';
       let overflowedMidStream = false;
+      let streamUsage: GeminiUsage | null = null;
 
       for await (const event of stream) {
+        streamUsage = usageOf(event) ?? streamUsage;
         if (event.event_type === 'step.start' && event.step.type === 'function_call') {
           pending.set(event.index, { name: event.step.name, id: event.step.id, args: '' });
         }
@@ -198,7 +214,6 @@ export class GeminiProvider implements ModelProvider {
           try {
             args = call.args ? JSON.parse(call.args) : {};
           } catch (error) {
-
             toolResults.push({
               type: 'function_result',
               call_id: call.id,
@@ -215,7 +230,7 @@ export class GeminiProvider implements ModelProvider {
           yield { type: 'tool_call', id: call.id, name: call.name, args };
 
           const result = isCancelled()
-            ? 'ERROR: cancelled — this session no longer owns the project'
+            ? 'ERROR: cancelled — this turn was stopped (the user left, ownership was lost, or the turn hit its cost limit)'
             : await executeTool(call.name, args, call.id);
           const isError = looksLikeError(result);
 
@@ -258,6 +273,7 @@ export class GeminiProvider implements ModelProvider {
         }
       }
 
+      this.recordUsage(streamUsage);
       if (assistantText) state.transcript.push({ role: 'assistant', content: assistantText });
 
       if (overflowedMidStream) {

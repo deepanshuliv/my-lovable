@@ -1,8 +1,9 @@
 'use client';
 
+import { ArrowUp, CaretUp, Check, Hammer, ListChecks, Stop, X } from '@phosphor-icons/react';
 import { useRef, useEffect } from 'react';
 import type { AgentMode } from '@/lib/types';
-import { MODES, type ByokProvider, type ProviderPreference } from '@/lib/byok';
+import { MODES, PROVIDERS, providerLabel, type ByokProvider, type ProviderPreference } from '@/lib/byok';
 import Dropdown, { type DropdownGroup } from './Dropdown';
 
 export default function Composer({
@@ -20,6 +21,8 @@ export default function Composer({
   onResumeQueue,
   providerPref,
   onProviderChange,
+  platformCreditsLeft,
+  savedKeyProviders,
 }: {
   draft: string;
   setDraft: (value: string) => void;
@@ -35,13 +38,15 @@ export default function Composer({
   onResumeQueue: () => void;
   providerPref: ProviderPreference | null;
   onProviderChange: (provider: ByokProvider, usePlatform: boolean) => void;
+  platformCreditsLeft?: number | null;
+  savedKeyProviders?: string[];
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      
+
       textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
     }
   }, [draft]);
@@ -53,6 +58,7 @@ export default function Composer({
   };
 
   const currentModeOption = MODES.find((m) => m.id === mode) || MODES[0]!;
+  const selectedMark = (on: boolean) => (on ? <Check size={13} weight="bold" className="text-[var(--accent-text)]" /> : <span className="w-[13px]" />);
 
   const modeGroups: DropdownGroup[] = [
     {
@@ -60,103 +66,86 @@ export default function Composer({
         id: option.id,
         label: option.label,
         secondary: option.hint,
-        icon: mode === option.id ? <span className="text-[var(--accent)] text-sm font-bold">·</span> : <span className="w-4" />,
+        icon: selectedMark(mode === option.id),
         onClick: () => onModeChange(option.id),
       })),
     },
   ];
 
+  const creditsLabel =
+    typeof platformCreditsLeft === 'number' ? `${platformCreditsLeft} free credits left` : 'Uses your free credits';
+  const savedProviders = new Set(savedKeyProviders ?? []);
+
   const providerGroups: DropdownGroup[] = [
     {
-      title: 'Google Gemini',
+      title: 'Included',
       items: [
         {
-          id: 'gemini-byok',
-          label: 'Gemini',
-          secondary: 'My API key',
-          icon: providerPref?.provider === 'gemini' && !providerPref?.usePlatform ? <span className="text-[var(--accent)] text-sm font-bold">·</span> : <span className="w-4" />,
-          onClick: () => onProviderChange('gemini', false),
+          id: 'platform',
+          label: 'Free credits',
+          secondary: creditsLabel,
+          icon: selectedMark(Boolean(providerPref?.usePlatform)),
+          onClick: () => onProviderChange('openrouter', true),
         },
-        {
-          id: 'gemini-platform',
-          label: 'Gemini',
-          secondary: 'Platform credits',
-          icon: providerPref?.provider === 'gemini' && providerPref?.usePlatform ? <span className="text-[var(--accent)] text-sm font-bold">·</span> : <span className="w-4" />,
-          onClick: () => onProviderChange('gemini', true),
-        }
-      ]
+      ],
     },
     {
-      title: 'OpenRouter',
-      items: [
-        {
-          id: 'or-byok',
-          label: 'OpenRouter',
-          secondary: 'My API key',
-          icon: providerPref?.provider === 'openrouter' && !providerPref?.usePlatform ? <span className="text-[var(--accent)] text-sm font-bold">·</span> : <span className="w-4" />,
-          onClick: () => onProviderChange('openrouter', false),
-        },
-        {
-          id: 'or-platform',
-          label: 'OpenRouter',
-          secondary: 'Platform credits',
-          icon: providerPref?.provider === 'openrouter' && providerPref?.usePlatform ? <span className="text-[var(--accent)] text-sm font-bold">·</span> : <span className="w-4" />,
-          onClick: () => onProviderChange('openrouter', true),
-        }
-      ]
-    }
+      title: 'Your own key',
+      items: PROVIDERS.map((p) => ({
+        id: `byok-${p.id}`,
+        label: p.label,
+        secondary: savedProviders.has(p.id) ? 'Key saved' : 'Add your key',
+        icon: selectedMark(!providerPref?.usePlatform && providerPref?.provider === p.id),
+        onClick: () => onProviderChange(p.id, false),
+      })),
+    },
   ];
 
-  const activeProviderLabel = providerPref?.provider === 'openrouter' ? 'OpenRouter' : 'Gemini';
-  const activeSourceLabel = providerPref?.usePlatform ? 'Platform credits' : 'My API key';
+  const activeLabel = providerPref?.usePlatform
+    ? 'Free credits'
+    : `${providerLabel(providerPref?.provider ?? 'openrouter')} key`;
+  const ModeIcon = mode === 'plan' ? ListChecks : Hammer;
 
   return (
-    <div className="shrink-0 border-t p-4" style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}>
+    <div className="shrink-0 border-t border-[var(--line)] bg-[var(--bg)] p-3">
       {queued.length > 0 && (
-        <div className="mb-3 space-y-1">
-          {paused && (
-            <div className="flex items-center justify-between px-0.5 pb-1">
-              <span className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                paused — {queued.length} waiting
-              </span>
-              <button
-                onClick={onResumeQueue}
-                className="text-[11px] underline underline-offset-2 transition hover:opacity-70"
-                style={{ color: 'var(--accent)' }}
-              >
-                Run them
+        <div className="mb-2.5 space-y-1.5">
+          <div className="flex items-center justify-between px-1">
+            <span className="text-[12px] text-[var(--muted)]">
+              {paused ? `Paused. ${queued.length} waiting.` : `Up next (${queued.length})`}
+            </span>
+            {paused && (
+              <button onClick={onResumeQueue} className="text-[12px] font-medium text-[var(--accent-text)] hover:underline">
+                Continue
               </button>
-            </div>
-          )}
+            )}
+          </div>
           {queued.map((item) => (
             <div
               key={item.id}
-              className="flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs shadow-sm"
-              style={{
-                borderColor: 'var(--line)',
-                background: 'var(--panel-2)',
-                color: 'var(--muted)',
-              }}
+              className="flex items-center gap-2 rounded-[10px] border-2 border-[var(--edge)] bg-[var(--cream)] py-1.5 pl-3 pr-1.5 text-[12.5px] font-medium"
             >
-              <span className="shrink-0 font-bold" style={{ color: 'var(--accent)' }}>·</span>
-              <span className="min-w-0 flex-1 truncate" title={item.text}>{item.text}</span>
+              <span className="min-w-0 flex-1 truncate" title={item.text}>
+                {item.text}
+              </span>
               <button
                 onClick={() => onCancelQueued(item.id)}
-                className="shrink-0 opacity-40 transition hover:opacity-100"
-                title="Remove from queue"
+                aria-label="Remove from queue"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]"
               >
-                ✕
+                <X size={12} weight="bold" />
               </button>
             </div>
           ))}
         </div>
       )}
 
-      <div
-        className="flex flex-col rounded-xl border shadow-sm transition-all focus-within:border-[var(--accent)]/30 focus-within:ring-4 focus-within:ring-[var(--accent)]/10"
-        style={{ background: 'var(--panel-2)', borderColor: 'var(--line)' }}
-      >
+      <div className="flex flex-col rounded-[14px] border-2 border-[var(--edge)] bg-[var(--panel)] shadow-[var(--hard)] transition-shadow focus-within:shadow-[var(--hard),0_0_0_5px_var(--accent-ring)]">
+        <label htmlFor="composer-input" className="sr-only">
+          Message
+        </label>
         <textarea
+          id="composer-input"
           ref={textareaRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -169,35 +158,29 @@ export default function Composer({
           rows={1}
           placeholder={
             busy
-              ? 'Add another instruction — it will run next…'
+              ? 'Add another request. It runs after this one.'
               : mode === 'plan'
-                ? 'Describe what you want planned…'
-                : 'Ask for a change…'
+                ? 'Describe what you want planned first'
+                : 'Ask for a change, like "make the header blue"'
           }
-          className="w-full resize-none bg-transparent p-3.5 text-[13px] leading-relaxed text-zinc-200 outline-none placeholder:opacity-35"
+          className="w-full resize-none bg-transparent px-4 pb-2 pt-3.5 text-[13.5px] leading-relaxed text-[var(--text)] outline-none placeholder:text-[var(--faint)]"
         />
 
-        <div className="flex items-center justify-between p-2 pt-0">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2 p-2 pt-0">
+          <div className="flex min-w-0 items-center gap-0.5">
             <Dropdown
               groups={modeGroups}
               align="left"
               direction="up"
-              width={220}
+              width={240}
               trigger={
-                <button
-                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition hover:bg-zinc-800/50"
-                  style={{ color: 'var(--muted)' }}
-                  title="Select mode"
-                >
-                  <div className={`h-1.5 w-1.5 rounded-full ${mode === 'build' ? 'bg-[var(--accent)]' : 'bg-purple-400'}`} />
-                  <span>{currentModeOption.label}</span>
-                  <span className="text-[8px] opacity-60">▼</span>
+                <button className="flex items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[12px] font-bold text-[var(--muted)] transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]" title="Build changes the app. Plan only suggests.">
+                  <ModeIcon size={13} weight="bold" className={mode === 'build' ? 'text-[var(--accent-text)]' : ''} />
+                  {currentModeOption.label}
+                  <CaretUp size={10} weight="bold" className="opacity-60" />
                 </button>
               }
             />
-
-            <div className="h-3 w-px bg-zinc-700/50" />
 
             <Dropdown
               groups={providerGroups}
@@ -205,44 +188,33 @@ export default function Composer({
               direction="up"
               width={240}
               trigger={
-                <button
-                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition hover:bg-zinc-800/50"
-                  style={{ color: 'var(--muted)' }}
-                  title="Select AI Provider"
-                >
-                  <span className="text-zinc-300">{activeProviderLabel}</span>
-                  <span className="opacity-50">·</span>
-                  <span className="opacity-70">{activeSourceLabel}</span>
-                  <span className="text-[8px] opacity-60">▼</span>
+                <button className="flex min-w-0 items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[12px] font-bold text-[var(--muted)] transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]" title="Which AI model to use">
+                  <span className="truncate font-medium text-[var(--text)]/80">{activeLabel}</span>
+                  <CaretUp size={10} weight="bold" className="shrink-0 opacity-60" />
                 </button>
               }
             />
           </div>
 
-          <div className="flex items-center gap-2">
-            {busy ? (
-              <button
-                onClick={onStop}
-                disabled={stopping}
-                className="flex items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-[12px] font-semibold transition hover:bg-red-950/30 hover:text-red-400 hover:border-red-900/50 disabled:opacity-50"
-                style={{ borderColor: 'var(--line)', color: 'var(--muted)', background: 'var(--panel)' }}
-              >
-                <span
-                  className="inline-block h-2.5 w-2.5 rounded-[2px]"
-                  style={{ background: stopping ? 'var(--muted)' : '#f87171' }}
-                />
-                {stopping ? 'Stopping…' : 'Stop'}
-              </button>
-            ) : (
-              <button
-                onClick={submit}
-                disabled={!draft.trim()}
-                className="btn-primary px-4 py-1.5 text-[12px] min-w-[80px]"
-              >
-                Send
-              </button>
-            )}
-          </div>
+          {busy ? (
+            <button
+              onClick={onStop}
+              disabled={stopping}
+              className="btn-secondary btn-sm shrink-0 hover:!border-[var(--error)]/40 hover:!text-[var(--error)]"
+            >
+              <Stop size={12} weight="fill" />
+              {stopping ? 'Stopping' : 'Stop'}
+            </button>
+          ) : (
+            <button
+              onClick={submit}
+              disabled={!draft.trim()}
+              aria-label="Send"
+              className="btn-primary h-9 w-9 shrink-0 !rounded-[9px] !p-0"
+            >
+              <ArrowUp size={15} weight="bold" />
+            </button>
+          )}
         </div>
       </div>
     </div>

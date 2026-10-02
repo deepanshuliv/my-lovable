@@ -1,34 +1,54 @@
 'use client';
 
+import { ArrowUpRight, Check, LockSimple } from '@phosphor-icons/react';
 import { useMemo, useState } from 'react';
-import { FALLBACK_MODELS, PROVIDERS, markByokSkipped, type ByokProvider } from '@/lib/byok';
+import { FALLBACK_MODELS, PROVIDERS, type ByokModel, type ByokProvider } from '@/lib/byok';
 import { saveMyKey, type StoredKey } from '@/lib/api';
 import { useToken } from '@/lib/useToken';
+import Modal from './Modal';
 
 export default function ByokModal({
+  initialProvider = 'openrouter',
   models,
-  onDone,
+  saved = [],
+  onSaved,
+  onClose,
+  onForget,
 }: {
-  models?: Record<string, { id: string; recommended: boolean }[]>;
-  onDone: (key: StoredKey | null) => void;
+  initialProvider?: ByokProvider;
+  models?: Record<string, { id: string; label?: string; note?: string; recommended: boolean }[]>;
+  saved?: StoredKey[];
+  onSaved: (key: StoredKey) => void;
+  onClose: () => void;
+  onForget?: (provider: ByokProvider) => void;
 }) {
   const getToken = useToken();
 
-  const [provider, setProvider] = useState<ByokProvider>('openrouter');
+  const [provider, setProvider] = useState<ByokProvider>(initialProvider);
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmForget, setConfirmForget] = useState(false);
 
-  const providerInfo = PROVIDERS.find((p) => p.id === provider)!;
+  const info = PROVIDERS.find((p) => p.id === provider)!;
+  const existing = saved.find((key) => key.provider === provider) ?? null;
 
-  const available = useMemo(() => {
-    const list = models?.[provider];
-    return list && list.length > 0 ? list : FALLBACK_MODELS[provider];
+  const available: ByokModel[] = useMemo(() => {
+    const fromServer = models?.[provider];
+    if (fromServer && fromServer.length > 0) {
+      return fromServer.slice(0, 3).map((item) => ({
+        id: item.id,
+        label: item.label ?? item.id,
+        note: item.note ?? '',
+        recommended: item.recommended,
+      }));
+    }
+    return FALLBACK_MODELS[provider];
   }, [models, provider]);
 
   const recommended = available.find((m) => m.recommended) ?? available[0];
-  const selected = model || recommended?.id || '';
+  const selected = model || existing?.model || recommended?.id || '';
 
   async function submit() {
     if (!apiKey.trim() || saving) return;
@@ -39,139 +59,173 @@ export default function ByokModal({
     try {
       const { key } = await saveMyKey(await getToken(), provider, apiKey.trim(), selected);
       setApiKey('');
-      onDone(key);
+      onSaved(key);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : 'That key could not be saved. Check it and try again.');
       setSaving(false);
     }
   }
 
-  function skip() {
-    markByokSkipped();
-    onDone(null);
-  }
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
-      <div
-        className="w-full max-w-md overflow-hidden rounded-[24px] border shadow-2xl transition-all relative"
-        style={{ background: 'var(--panel)', borderColor: 'var(--line)' }}
-      >
-        <button
-          onClick={skip}
-          className="absolute top-5 right-5 text-white/40 hover:text-white transition"
-          title="Close"
-        >
-          ✕
-        </button>
-
-        <div
-          className="flex flex-col items-center justify-center border-b px-6 pt-8 pb-6 text-center"
-          style={{ borderColor: 'var(--line)' }}
-        >
-          <h2 className="font-heading text-[24px] uppercase tracking-wider text-white">
-            Power Your Build
-          </h2>
-          <p className="mt-2 text-[14px] text-white/50 leading-relaxed max-w-[320px]">
-            Run on our high-speed platform model by default, or bring your own API key.
-          </p>
+    <Modal
+      title="Use your own AI key"
+      description="Builds run on your own account instead of your free credits. You pay your provider directly."
+      onClose={onClose}
+      width="max-w-lg"
+      footer={
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} className="btn-ghost">
+            Cancel
+          </button>
+          <button type="button" onClick={() => void submit()} disabled={!apiKey.trim() || saving} className="btn-primary">
+            {saving ? (
+              <>
+                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-[var(--accent-ink)] border-t-transparent" />
+                Checking your key
+              </>
+            ) : existing ? (
+              'Check and replace key'
+            ) : (
+              'Check key and save'
+            )}
+          </button>
         </div>
-
-        <div className="space-y-5 p-6">
-          <label className="block">
-            <span className="mb-2 block text-[11px] font-bold uppercase tracking-widest text-white/40">
-              Provider
-            </span>
-            <select
-              value={provider}
-              onChange={(e) => {
-                setProvider(e.target.value as ByokProvider);
-                setModel('');
-              }}
-              className="w-full rounded-xl border px-4 py-3 text-[14px] font-medium text-white outline-none transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
-              style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
-            >
-              {PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="block">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="block text-[11px] font-bold uppercase tracking-widest text-white/40">
-                API key
-              </span>
-              <a
-                href={providerInfo.keyUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] text-[var(--accent)] hover:opacity-80 transition"
+      }
+    >
+      <div className="space-y-6">
+        <div>
+          <span className="field-label">1. Choose your provider</span>
+          <div className="grid grid-cols-3 gap-2" role="radiogroup">
+            {PROVIDERS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                role="radio"
+                aria-checked={provider === p.id}
+                onClick={() => {
+                  setProvider(p.id);
+                  setModel('');
+                  setError(null);
+                  setConfirmForget(false);
+                }}
+                className={`rounded-[10px] border-2 px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow] ${
+                  provider === p.id
+                    ? 'border-[var(--edge)] bg-[var(--lime)] shadow-[var(--hard-sm)]'
+                    : 'border-[var(--line-strong)] bg-[var(--panel)] hover:border-[var(--edge)]'
+                }`}
               >
-                Get a key ↗
-              </a>
-            </div>
-            <input
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void submit();
-              }}
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              placeholder={providerInfo.placeholder}
-              className="w-full rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none placeholder:text-white/20 transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
-              style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
-            />
-          </label>
-
-          <label className="block">
-            <span className="mb-2 block text-[11px] font-bold uppercase tracking-widest text-white/40">
-              Model
-            </span>
-            <select
-              value={selected}
-              onChange={(e) => setModel(e.target.value)}
-              className="w-full rounded-xl border px-4 py-3 font-mono text-[13px] text-white outline-none transition-all focus:border-[var(--accent)]/30 focus:ring-4 focus:ring-[var(--accent)]/10"
-              style={{ borderColor: 'var(--line)', background: 'var(--panel-2)' }}
-            >
-              {available.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.id}
-                  {m.recommended ? '  (recommended)' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <div className="flex flex-col gap-3 pt-2">
-            <button
-              type="button"
-              onClick={() => void submit()}
-              disabled={!apiKey.trim() || saving}
-              className="btn-primary w-full"
-            >
-              {saving ? 'Saving…' : 'Save & Use My Key'}
-            </button>
-            <button
-              type="button"
-              onClick={skip}
-              className="btn-secondary w-full"
-            >
-              Skip & Use Platform Key
-            </button>
+                <span className="block text-[13.5px] font-semibold">{p.label}</span>
+                <span className="mt-0.5 block text-[11.5px] text-[var(--muted)]">{p.blurb}</span>
+              </button>
+            ))}
           </div>
-
-          <p className="mt-1 text-center text-[11px] text-white/30">
-            Encrypted with AES-256-GCM. Delete anytime.
-          </p>
-
-          {error && <p className="mt-2 text-center text-[12px] text-red-400">{error}</p>}
         </div>
+
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <label htmlFor="byok-key" className="text-[13px] font-medium">
+              2. Paste your {info.label} key
+            </label>
+            <a
+              href={info.keyUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-0.5 text-[12px] text-[var(--accent-text)] transition-opacity hover:opacity-80"
+            >
+              Get a key
+              <ArrowUpRight size={12} />
+            </a>
+          </div>
+          {existing && (
+            <div className="mb-2.5 flex items-center justify-between gap-3 rounded-[10px] border-2 border-[var(--edge)] bg-[var(--cream)] px-3 py-2">
+              <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-[var(--muted)]">
+                <Check size={13} weight="bold" className="shrink-0 text-[var(--accent-text)]" />
+                <span className="truncate">
+                  Saved: <span className="font-mono">{existing.maskedPreview}</span>
+                </span>
+              </span>
+              {onForget &&
+                (confirmForget ? (
+                  <span className="flex shrink-0 items-center gap-1">
+                    <button onClick={() => setConfirmForget(false)} className="btn-ghost btn-sm !py-1">
+                      Keep
+                    </button>
+                    <button onClick={() => onForget(provider)} className="btn-ghost btn-sm !py-1 !text-[var(--error)]">
+                      Remove
+                    </button>
+                  </span>
+                ) : (
+                  <button onClick={() => setConfirmForget(true)} className="btn-ghost btn-sm shrink-0 !py-1">
+                    Remove
+                  </button>
+                ))}
+            </div>
+          )}
+          <input
+            id="byok-key"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void submit();
+            }}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={existing ? `Paste a new ${info.label} key to replace it` : info.placeholder}
+            className="field font-mono text-[13px]"
+          />
+          <p className="mt-2 flex items-center gap-1.5 text-[12px] text-[var(--muted)]">
+            <LockSimple size={13} />
+            We check it works, then store it encrypted. It is never shown again.
+          </p>
+        </div>
+
+        <div>
+          <span className="field-label">3. Pick a model</span>
+          <div className="space-y-2" role="radiogroup">
+            {available.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                role="radio"
+                aria-checked={selected === m.id}
+                onClick={() => setModel(m.id)}
+                className={`flex w-full items-center gap-3 rounded-[10px] border-2 px-3.5 py-3 text-left transition-[background-color,border-color,box-shadow] ${
+                  selected === m.id
+                    ? 'border-[var(--edge)] bg-[var(--lime)] shadow-[var(--hard-sm)]'
+                    : 'border-[var(--line-strong)] bg-[var(--panel)] hover:border-[var(--edge)]'
+                }`}
+              >
+                <span
+                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                    selected === m.id ? 'border-[var(--edge)] bg-[var(--ink)]' : 'border-[var(--line-strong)]'
+                  }`}
+                >
+                  {selected === m.id && <span className="h-1.5 w-1.5 rounded-full bg-[var(--lime)]" />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2 text-[13.5px] font-semibold">
+                    {m.label}
+                    {m.recommended && (
+                      <span className="rounded-[4px] bg-[var(--ink)] px-1.5 py-0.5 text-[10.5px] font-bold uppercase text-[var(--lime)]">
+                        Recommended
+                      </span>
+                    )}
+                  </span>
+                  {m.note && <span className="mt-0.5 block text-[12px] text-[var(--muted)]">{m.note}</span>}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {error && (
+          <p role="alert" className="rounded-[10px] border-2 border-[var(--edge)] bg-[var(--error-card)] px-3 py-2.5 text-[13px] font-medium text-[var(--text)]">
+            {error}
+          </p>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }
+

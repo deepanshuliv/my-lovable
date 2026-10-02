@@ -1,5 +1,5 @@
 import type { ByokProvider } from './byok';
-import type { AgentMode, SecretSummary, StreamEvent } from './types';
+import type { AgentMode, KeyCheck, SecretSummary, StreamEvent } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
@@ -20,7 +20,7 @@ export type ProjectSummary = {
 };
 
 export type StoredKey = {
-  provider: 'openrouter' | 'gemini';
+  provider: 'openrouter' | 'openai' | 'anthropic' | 'gemini' | 'deepseek';
   maskedPreview: string;
   model: string | null;
   updatedAt: string;
@@ -34,7 +34,7 @@ export type HealthInfo = {
   secrets: string;
   sandbox: string;
   template: string;
-    byokModels?: Record<string, { id: string; recommended: boolean }[]>;
+    byokModels?: Record<string, { id: string; label?: string; note?: string; recommended: boolean }[]>;
     auth?: string;
     userKeys?: string;
 };
@@ -111,6 +111,36 @@ export async function sendAnswer(token: Token, questionId: string, answer: strin
   });
 }
 
+export type KeySubmission =
+  | { ok: true; status: 'verified' | 'declined'; results: KeyCheck[] }
+  | { ok: false; status: 'invalid' | 'unreachable' | 'expired' | 'error'; results: KeyCheck[]; message?: string };
+
+async function postKeyRequest(token: Token, requestId: string, body: unknown): Promise<KeySubmission> {
+  try {
+    const response = await fetch(`${API_URL}/keys/${encodeURIComponent(requestId)}`, {
+      method: 'POST',
+      headers: authHeaders(token, true),
+      body: JSON.stringify(body),
+    });
+    const data = (await response.json().catch(() => ({}))) as { status?: string; results?: KeyCheck[]; msg?: string };
+    const results = data.results ?? [];
+    if (response.ok) return { ok: true, status: data.status === 'declined' ? 'declined' : 'verified', results };
+    if (response.status === 422) return { ok: false, status: data.status === 'unreachable' ? 'unreachable' : 'invalid', results };
+    if (response.status === 410) return { ok: false, status: 'expired', results, message: data.msg };
+    return { ok: false, status: 'error', results, message: data.msg ?? 'Something went wrong. Please try again.' };
+  } catch {
+    return { ok: false, status: 'error', results: [], message: 'We could not reach the server. Please try again.' };
+  }
+}
+
+export async function submitKeys(token: Token, requestId: string, values: Record<string, string>) {
+  return await postKeyRequest(token, requestId, { values });
+}
+
+export async function declineKeys(token: Token, requestId: string) {
+  return await postKeyRequest(token, requestId, { decline: true });
+}
+
 export async function fetchSecrets(token: Token, projectId: string) {
   const response = await fetch(`${API_URL}/projects/${projectId}/secrets`, {
     headers: authHeaders(token),
@@ -160,7 +190,6 @@ export async function reportClientErrors(
       body: JSON.stringify({ errors }),
     });
   } catch {
-    
   }
 }
 
@@ -172,9 +201,15 @@ export function openChatStream(
   query: string,
   onEvent: (event: StreamEvent) => void,
   onClose: (error?: string) => void,
-  options?: { mode?: AgentMode; provider?: ByokProvider; usePlatform?: boolean },
+  options?: {
+    mode?: AgentMode;
+    provider?: ByokProvider;
+    usePlatform?: boolean;
+    getToken?: () => Promise<Token>;
+  },
 ): ChatStreamHandle {
   const controller = new AbortController();
+  let finished = false;
 
   void (async () => {
     try {
@@ -190,6 +225,8 @@ export function openChatStream(
         signal: controller.signal,
       });
 
+      if (response.status !== 200) finished = true;
+
       if (response.status === 401) {
         onClose('please sign in');
         return;
@@ -202,7 +239,8 @@ export function openChatStream(
       }
 
       if (!response.ok || !response.body) {
-        onClose(`chat failed: ${response.status}`);
+        const body = (await response.json().catch(() => ({}))) as { msg?: string };
+        onClose(body.msg || `chat failed: ${response.status}`);
         return;
       }
 
@@ -216,8 +254,6 @@ export function openChatStream(
 
         buffer += decoder.decode(value, { stream: true });
 
-        // SSE frames are separated by a blank line. A partial frame stays in the buffer
-        // until the rest of it arrives.
         let boundary = buffer.indexOf('\n\n');
         while (boundary !== -1) {
           const frame = buffer.slice(0, boundary);
@@ -230,11 +266,11 @@ export function openChatStream(
           try {
             onEvent(JSON.parse(line.slice(6)) as StreamEvent);
           } catch {
-            
           }
         }
       }
 
+      finished = true;
       onClose();
     } catch (error) {
       if ((error as Error).name === 'AbortError') {
@@ -245,7 +281,45 @@ export function openChatStream(
     }
   })();
 
-  return { abort: () => controller.abort() };
+  return {
+    abort: () => {
+      controller.abort();
+      if (finished) return;
+      finished = true;
+      void (async () => {
+        const fresh = (await options?.getToken?.().catch(() => null)) ?? token;
+        await fetch(`${API_URL}/chat/${projectId}/cancel`, {
+          method: 'POST',
+          headers: authHeaders(fresh),
+          keepalive: true,
+        }).catch(() => {});
+      })();
+    },
+  };
+}
+
+export type SandboxPresence = 'running' | 'stopped' | 'none';
+
+export async function sendHeartbeat(
+  token: Token,
+  projectId: string,
+): Promise<{ sandbox: SandboxPresence; ticket: string } | null> {
+  try {
+    const response = await fetch(`${API_URL}/projects/${projectId}/heartbeat`, {
+      method: 'POST',
+      headers: authHeaders(token),
+    });
+    if (!response.ok) return null;
+    return (await response.json()) as { sandbox: SandboxPresence; ticket: string };
+  } catch {
+    return null;
+  }
+}
+
+export function leaveProject(projectId: string, ticket: string) {
+  const url = `${API_URL}/projects/${projectId}/leave?ticket=${encodeURIComponent(ticket)}`;
+  if (typeof navigator !== 'undefined' && navigator.sendBeacon?.(url)) return;
+  void fetch(url, { method: 'POST', keepalive: true }).catch(() => {});
 }
 
 export function wakeProjectStream(
@@ -302,7 +376,6 @@ export function wakeProjectStream(
           try {
             onEvent(JSON.parse(line.slice(6)) as StreamEvent);
           } catch {
-            
           }
         }
       }
@@ -320,6 +393,25 @@ export function wakeProjectStream(
   return { abort: () => controller.abort() };
 }
 
+export type CreditBalance = {
+  grantedMicros: number;
+  consumedMicros: number;
+  remainingMicros: number;
+  totalUnits: number;
+  remainingUnits: number;
+  usedUnits: number;
+};
+
+export async function fetchCredits(token: Token): Promise<CreditBalance | null> {
+  try {
+    const response = await fetch(`${API_URL}/me/credits`, { headers: authHeaders(token) });
+    if (!response.ok) return null;
+    return ((await response.json()) as { credits: CreditBalance }).credits;
+  } catch {
+    return null;
+  }
+}
+
 export async function getMyKeys(token: Token) {
   const response = await fetch(`${API_URL}/me/keys`, { headers: authHeaders(token) });
   if (!response.ok) return { keys: [] as StoredKey[], enabled: false };
@@ -328,7 +420,7 @@ export async function getMyKeys(token: Token) {
 
 export async function saveMyKey(
   token: Token,
-  provider: 'openrouter' | 'gemini',
+  provider: ByokProvider,
   apiKey: string,
   model?: string,
 ) {
@@ -346,7 +438,7 @@ export async function saveMyKey(
   return (await response.json()) as { key: StoredKey };
 }
 
-export async function deleteMyKey(token: Token, provider: 'openrouter' | 'gemini') {
+export async function deleteMyKey(token: Token, provider: StoredKey['provider']) {
   await fetch(`${API_URL}/me/keys/${provider}`, {
     method: 'DELETE',
     headers: authHeaders(token),

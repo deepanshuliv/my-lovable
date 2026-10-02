@@ -8,9 +8,76 @@ import {
   type ConversationPart,
   type FileOps,
 } from '../compaction';
-import { looksLikeError, type ModelProvider, type ProviderEvent, type RunOptions, type ToolSpec } from './types';
+import { addUsage, createUsage, looksLikeError, type ModelProvider, type ProviderEvent, type RunOptions, type ToolSpec } from './types';
 
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
+
+const MAX_OUTPUT_TOKENS = Math.max(1_024, Number(process.env.MAX_OUTPUT_TOKENS || '24000'));
+const STREAM_REASONING = process.env.OPENROUTER_REASONING === 'on';
+const STREAM_DEADLINE_MS = Math.max(30_000, Number(process.env.STREAM_DEADLINE_SECONDS || '240') * 1000);
+
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+export class OpenRouterStreamError extends Error {}
+
+type StreamPass = {
+  pending: Map<number, { id: string; name: string; args: string }>;
+  assistantText: string;
+  finishReason: string | null;
+  overflowed: boolean;
+};
+
+function newStreamPass(): StreamPass {
+  return { pending: new Map(), assistantText: '', finishReason: null, overflowed: false };
+}
+
+export function retryDelayMs(attempt: number, retryAfter?: string | null): number {
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds > 0) return Math.min(30_000, seconds * 1000);
+  return Math.min(20_000, 1_500 * 2 ** attempt) + Math.floor(Math.random() * 500);
+}
+
+function fallbackModels(primary: string): string[] {
+  const extra = (process.env.OPENROUTER_FALLBACK_MODELS || '')
+    .split(',')
+    .map((model) => model.trim())
+    .filter((model) => model && model !== primary);
+  return extra.length > 0 ? [primary, ...extra] : [];
+}
+
+export type CompatFlavor = 'openrouter' | 'openai' | 'anthropic' | 'deepseek';
+
+async function postWithRetry(url: string, init: RequestInit, label: string, onAttempt: () => void): Promise<Response> {
+  const attempts = Math.max(1, Number(process.env.OPENROUTER_MAX_RETRIES || '4') + 1);
+  let lastError = '';
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const isLast = attempt === attempts - 1;
+    let response: Response;
+    onAttempt();
+    try {
+      response = await fetch(url, init);
+    } catch (error) {
+      lastError = `${label} network error: ${String(error).slice(0, 200)}`;
+      if (isLast) break;
+      console.log(`[OPENROUTER_RETRY] ${label} network error, attempt ${attempt + 1}`);
+      await Bun.sleep(retryDelayMs(attempt));
+      continue;
+    }
+    if (response.ok && response.body) return response;
+    const body = await response.text().catch(() => '');
+    lastError = `${label} ${response.status}: ${body.slice(0, 400)}`;
+    if (response.status === 429 && /per[- ]day|daily/i.test(body)) {
+      lastError = `OpenRouter daily request limit reached for this key; it resets at 00:00 UTC. ${body.slice(0, 200)}`;
+      break;
+    }
+    if (!RETRYABLE_STATUS.has(response.status) || isLast) break;
+    console.log(`[OPENROUTER_RETRY] ${label} ${response.status}, attempt ${attempt + 1}`);
+    await Bun.sleep(retryDelayMs(attempt, response.headers.get('retry-after')));
+  }
+  throw new Error(lastError);
+}
+
+type OpenRouterUsage = { prompt_tokens?: number; completion_tokens?: number; cost?: number };
 
 type ChatMessage =
   | { role: 'system' | 'user' | 'assistant'; content: string }
@@ -35,81 +102,96 @@ function toOpenAITools(tools: ToolSpec[]) {
 }
 
 export class OpenRouterProvider implements ModelProvider {
-  readonly name = 'openrouter' as const;
+  readonly name: CompatFlavor;
   readonly model: string;
   readonly contextWindow: number;
+  readonly usage = createUsage();
 
   private apiKey: string;
   private baseUrl: string;
 
-  constructor(model: string, apiKey: string, baseUrl = DEFAULT_BASE_URL, contextWindow = 128_000) {
+  constructor(model: string, apiKey: string, baseUrl = DEFAULT_BASE_URL, contextWindow = 128_000, flavor: CompatFlavor = 'openrouter') {
+    this.name = flavor;
     this.model = model;
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.contextWindow = contextWindow;
   }
 
-  /** One-shot completion for compaction summaries. No tools, no streaming. */
+  private get isOpenRouter(): boolean {
+    return this.name === 'openrouter';
+  }
+
   async complete(systemPrompt: string, userPrompt: string, maxTokens: number): Promise<string> {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const models = this.isOpenRouter ? fallbackModels(this.model) : [];
+    const response = await postWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
-        'X-Title': 'my-lovable',
+        'X-Title': 'Inkling',
       },
       body: JSON.stringify({
         model: this.model,
+        ...(models.length > 0 ? { models } : {}),
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        max_tokens: maxTokens,
+        ...(this.name === 'openai' ? { max_completion_tokens: Math.max(maxTokens, 256) } : { max_tokens: maxTokens }),
         stream: false,
+        ...(this.isOpenRouter ? { usage: { include: true }, reasoning: { enabled: false } } : {}),
       }),
-    });
+    }, `${this.name} complete`, () => this.usage.requests++);
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`openrouter summarize ${response.status}: ${body.slice(0, 300)}`);
-    }
-
-    const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+    const data = (await response.json()) as {
+      choices?: { message?: { content?: string } }[];
+      usage?: OpenRouterUsage;
+    };
+    this.recordUsage(data.usage);
     return data.choices?.[0]?.message?.content ?? '';
   }
 
+  private recordUsage(usage?: OpenRouterUsage) {
+    if (!usage) return;
+    addUsage(this.usage, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0, usage.cost);
+  }
+
   private async openStream(messages: ChatMessage[], tools: ToolSpec[]): Promise<Response> {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const models = this.isOpenRouter ? fallbackModels(this.model) : [];
+    return await postWithRetry(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
-        
+
         'HTTP-Referer': process.env.PUBLIC_API_URL || 'http://localhost:8080',
-        'X-Title': 'my-lovable',
+        'X-Title': 'Inkling',
       },
       body: JSON.stringify({
         model: this.model,
+        ...(models.length > 0 ? { models } : {}),
         messages,
         tools: toOpenAITools(tools),
         tool_choice: 'auto',
         stream: true,
-        provider: {
-          require_parameters: true,
-          sort: 'throughput',
-          allow_fallbacks: true,
-        },
+        ...(this.isOpenRouter
+          ? {
+              usage: { include: true },
+              reasoning: { enabled: STREAM_REASONING },
+              provider: {
+                require_parameters: true,
+                sort: 'throughput',
+                allow_fallbacks: true,
+              },
+            }
+          : { stream_options: { include_usage: true } }),
+        ...(this.name === 'openai' ? { max_completion_tokens: MAX_OUTPUT_TOKENS } : { max_tokens: MAX_OUTPUT_TOKENS }),
       }),
-    });
-
-    if (!response.ok || !response.body) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`openrouter ${response.status}: ${body.slice(0, 400)}`);
-    }
-    return response;
+      signal: AbortSignal.timeout(STREAM_DEADLINE_MS),
+    }, `${this.name} stream`, () => this.usage.requests++);
   }
 
-  /** Split an SSE body into `data:` payloads, tolerating chunk boundaries mid-frame. */
   private async *readChunks(response: Response): AsyncGenerator<any> {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -130,11 +212,16 @@ export class OpenRouterProvider implements ModelProvider {
           if (!line.startsWith('data:')) continue;
           const payload = line.slice(5).trim();
           if (!payload || payload === '[DONE]') continue;
+          let chunk: any;
           try {
-            yield JSON.parse(payload);
+            chunk = JSON.parse(payload);
           } catch {
-
+            continue;
           }
+          if (chunk?.error) {
+            throw new OpenRouterStreamError(`openrouter stream error: ${JSON.stringify(chunk.error).slice(0, 300)}`);
+          }
+          yield chunk;
         }
       }
     }
@@ -215,6 +302,47 @@ export class OpenRouterProvider implements ModelProvider {
     }
   }
 
+  private async *consumeStream(
+    response: Response,
+    baseTokens: number,
+    tools: ToolSpec[],
+    contextBudget: RunOptions['contextBudget'],
+    pass: StreamPass,
+  ): AsyncGenerator<ProviderEvent, void> {
+    for await (const chunk of this.readChunks(response)) {
+      if (chunk?.usage) this.recordUsage(chunk.usage);
+      const choice = chunk?.choices?.[0];
+      if (!choice) continue;
+
+      const delta = choice.delta ?? {};
+
+      if (typeof delta.content === 'string' && delta.content.length > 0) {
+        pass.assistantText += delta.content;
+        yield { type: 'text_delta', text: delta.content };
+
+        if (contextBudget
+          ? contextBudget.shouldCompact(baseTokens + estimateTokens(pass.assistantText), estimateTokens(JSON.stringify(tools)))
+          : isOverThreshold(baseTokens + estimateTokens(pass.assistantText), this.contextWindow)) {
+          pass.overflowed = true;
+          return;
+        }
+      }
+
+      for (const fragment of delta.tool_calls ?? []) {
+        const index: number = fragment.index ?? 0;
+        const existing = pass.pending.get(index) ?? { id: '', name: '', args: '' };
+
+        if (fragment.id) existing.id = fragment.id;
+        if (fragment.function?.name) existing.name = fragment.function.name;
+        if (fragment.function?.arguments) existing.args += fragment.function.arguments;
+
+        pass.pending.set(index, existing);
+      }
+
+      if (choice.finish_reason) pass.finishReason = choice.finish_reason;
+    }
+  }
+
   async *run(options: RunOptions): AsyncIterable<ProviderEvent> {
     const { systemPrompt, tools, opening, clientErrors, maxTurns, isCancelled, executeTool, contextBudget } = options;
 
@@ -233,7 +361,7 @@ export class OpenRouterProvider implements ModelProvider {
     };
 
     let turns = 0;
-        let resumeAfterCompaction = false;
+    let resumeAfterCompaction = false;
 
     while (true) {
       if (isCancelled()) {
@@ -270,57 +398,44 @@ export class OpenRouterProvider implements ModelProvider {
         return;
       }
 
-      let response: Response;
-      try {
-        response = await this.openStream(state.messages, tools);
-      } catch (error) {
-        yield { type: 'error', message: String(error) };
+      const baseTokens = this.estimate(state.messages);
+      let response!: Response;
+      let pass = newStreamPass();
+      let streamFailure: string | null = null;
+
+      for (let streamAttempt = 0; ; streamAttempt++) {
+        pass = newStreamPass();
+        try {
+          response = await this.openStream(state.messages, tools);
+        } catch (error) {
+          streamFailure = String(error);
+          break;
+        }
+        try {
+          yield* this.consumeStream(response, baseTokens, tools, contextBudget, pass);
+          streamFailure = null;
+          break;
+        } catch (error) {
+          if (!(error instanceof OpenRouterStreamError)) throw error;
+          if (pass.assistantText === '' && pass.pending.size === 0 && streamAttempt < 3) {
+            console.log(`[OPENROUTER_RETRY] stream error before any output, attempt ${streamAttempt + 1}`);
+            await Bun.sleep(retryDelayMs(streamAttempt));
+            continue;
+          }
+          streamFailure = error.message;
+          break;
+        }
+      }
+
+      if (streamFailure) {
+        yield { type: 'error', message: streamFailure };
         yield { type: 'finished', reason: 'error' };
         return;
       }
 
-            const pending = new Map<number, { id: string; name: string; args: string }>();
-      let assistantText = '';
-      let finishReason: string | null = null;
+      const { pending, assistantText, finishReason } = pass;
+      const overflowedMidStream = pass.overflowed;
 
-      const baseTokens = this.estimate(state.messages);
-      /** Set when the response itself pushes us over the limit while it is still arriving. */
-      let overflowedMidStream = false;
-
-      for await (const chunk of this.readChunks(response)) {
-        const choice = chunk?.choices?.[0];
-        if (!choice) continue;
-
-        const delta = choice.delta ?? {};
-
-        if (typeof delta.content === 'string' && delta.content.length > 0) {
-          assistantText += delta.content;
-          yield { type: 'text_delta', text: delta.content };
-
-          if (contextBudget
-            ? contextBudget.shouldCompact(baseTokens + estimateTokens(assistantText), estimateTokens(JSON.stringify(tools)))
-            : isOverThreshold(baseTokens + estimateTokens(assistantText), this.contextWindow)) {
-            overflowedMidStream = true;
-            break;
-          }
-        }
-
-        for (const fragment of delta.tool_calls ?? []) {
-          const index: number = fragment.index ?? 0;
-          const existing = pending.get(index) ?? { id: '', name: '', args: '' };
-
-          // Each field can arrive in any chunk, so merge rather than overwrite.
-          if (fragment.id) existing.id = fragment.id;
-          if (fragment.function?.name) existing.name = fragment.function.name;
-          if (fragment.function?.arguments) existing.args += fragment.function.arguments;
-
-          pending.set(index, existing);
-        }
-
-        if (choice.finish_reason) finishReason = choice.finish_reason;
-      }
-
-      // Overflowed mid-response: keep what arrived, compact, and loop round to resume.
       if (overflowedMidStream) {
         response.body?.cancel().catch(() => {});
         if (assistantText) state.messages.push({ role: 'assistant', content: assistantText });
@@ -363,7 +478,7 @@ export class OpenRouterProvider implements ModelProvider {
         yield { type: 'tool_call', id: call.id, name: call.function.name, args };
 
         const result = isCancelled()
-          ? 'ERROR: cancelled — this session no longer owns the project'
+          ? 'ERROR: cancelled — this turn was stopped (the user left, ownership was lost, or the turn hit its cost limit)'
           : await executeTool(call.function.name, args, call.id);
         const isError = looksLikeError(result);
 

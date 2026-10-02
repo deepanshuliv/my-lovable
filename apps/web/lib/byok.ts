@@ -1,29 +1,83 @@
-
 import type { AgentMode } from './types';
 
-export type ByokProvider = 'openrouter' | 'gemini';
+export type ByokProvider = 'openrouter' | 'openai' | 'anthropic' | 'gemini' | 'deepseek';
+
+export type ByokModel = { id: string; label: string; note: string; recommended: boolean };
 
 const SKIP_KEY = 'my-lovable.byok.skipped';
 
-export const PROVIDERS: { id: ByokProvider; label: string; keyUrl: string; placeholder: string }[] = [
+export const PROVIDERS: { id: ByokProvider; label: string; blurb: string; keyUrl: string; placeholder: string }[] = [
   {
     id: 'openrouter',
     label: 'OpenRouter',
+    blurb: 'One key for many models',
     keyUrl: 'https://openrouter.ai/keys',
     placeholder: 'sk-or-v1-…',
   },
   {
+    id: 'openai',
+    label: 'OpenAI',
+    blurb: 'GPT models',
+    keyUrl: 'https://platform.openai.com/api-keys',
+    placeholder: 'sk-…',
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    blurb: 'Claude models',
+    keyUrl: 'https://console.anthropic.com/settings/keys',
+    placeholder: 'sk-ant-…',
+  },
+  {
     id: 'gemini',
-    label: 'Google Gemini',
+    label: 'Gemini',
+    blurb: 'Google models',
     keyUrl: 'https://aistudio.google.com/apikey',
     placeholder: 'AIza…',
   },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    blurb: 'Cheap, fast models',
+    keyUrl: 'https://platform.deepseek.com/api_keys',
+    placeholder: 'sk-…',
+  },
 ];
 
-export const FALLBACK_MODELS: Record<ByokProvider, { id: string; recommended: boolean }[]> = {
-  openrouter: [{ id: 'deepseek/deepseek-v4-flash', recommended: true }],
-  gemini: [{ id: 'gemini-3.1-flash-lite', recommended: true }],
+export function providerLabel(provider: string): string {
+  return PROVIDERS.find((item) => item.id === provider)?.label ?? provider;
+}
+
+export const FALLBACK_MODELS: Record<ByokProvider, ByokModel[]> = {
+  openrouter: [
+    { id: 'anthropic/claude-sonnet-5.5', label: 'Claude Sonnet 5.5', note: 'Most reliable at multi-step builds. Best overall.', recommended: true },
+    { id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash', note: 'Very cheap and fast. Good for simple apps.', recommended: false },
+    { id: 'openai/gpt-5.5', label: 'GPT-5.5', note: 'Strong all-rounder for complex apps.', recommended: false },
+  ],
+  openai: [
+    { id: 'gpt-5.5', label: 'GPT-5.5', note: 'Best quality for building apps.', recommended: true },
+    { id: 'gpt-5.4', label: 'GPT-5.4', note: 'Cheaper, still great at most apps.', recommended: false },
+    { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', note: 'Fastest and cheapest. Simple apps.', recommended: false },
+  ],
+  anthropic: [
+    { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', note: 'Best balance of quality, speed and cost.', recommended: true },
+    { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', note: 'Most capable. Slower and pricier.', recommended: false },
+    { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', note: 'Fastest and cheapest. Simple apps.', recommended: false },
+  ],
+  gemini: [
+    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', note: 'Fast with strong quality. Best overall.', recommended: true },
+    { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro', note: 'Most capable Gemini. Slower and pricier.', recommended: false },
+    { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite', note: 'Fastest and cheapest. Simple apps.', recommended: false },
+  ],
+  deepseek: [
+    { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', note: 'Very cheap and fast. Best value.', recommended: true },
+    { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', note: 'Stronger at multi-step builds. Slower.', recommended: false },
+  ],
 };
+
+export function isByokProvider(value: unknown): value is ByokProvider {
+  return PROVIDERS.some((item) => item.id === value);
+}
 
 export function markByokSkipped() {
   if (typeof window === 'undefined') return;
@@ -47,20 +101,24 @@ export function setProviderPreference(pref: ProviderPreference) {
   localStorage.setItem(PREFERENCE_KEY, JSON.stringify(pref));
 }
 
-export function getProviderPreference(): ProviderPreference | null {
-  if (typeof window === 'undefined') return null;
+export const DEFAULT_PREFERENCE: ProviderPreference = { provider: 'openrouter', usePlatform: true };
+
+export function getProviderPreference(): ProviderPreference {
+  if (typeof window === 'undefined') return DEFAULT_PREFERENCE;
   try {
     const data = localStorage.getItem(PREFERENCE_KEY);
-    if (!data) return null;
-    return JSON.parse(data) as ProviderPreference;
+    if (!data) return DEFAULT_PREFERENCE;
+    const parsed = JSON.parse(data) as Partial<ProviderPreference>;
+    if (!isByokProvider(parsed.provider)) return DEFAULT_PREFERENCE;
+    return { provider: parsed.provider, usePlatform: parsed.provider === 'openrouter' ? Boolean(parsed.usePlatform) : false };
   } catch {
-    return null;
+    return DEFAULT_PREFERENCE;
   }
 }
 
 export const MODES: { id: AgentMode; label: string; hint: string }[] = [
-  { id: 'build', label: 'Build', hint: 'Write the code and run it' },
-  { id: 'plan', label: 'Plan', hint: 'Investigate and propose — changes nothing' },
+  { id: 'build', label: 'Build', hint: 'Make the changes and run the app' },
+  { id: 'plan', label: 'Plan', hint: 'Suggest a plan first, without changing anything' },
 ];
 
 export function isAuthError(text: string): boolean {
