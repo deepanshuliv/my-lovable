@@ -1,4 +1,4 @@
-# Alloy
+# Inkling
 
 An AI app builder. You describe an app, an agent writes and runs it inside a Daytona cloud sandbox, and the running result is streamed back into a live preview beside the chat.
 
@@ -50,7 +50,15 @@ To run the application locally without Docker:
 
 ```bash
 bun install
-bunx prisma db push --schema packages/db/prisma/schema.prisma
+bun run db:sync
+```
+
+`bun run dev` and `bun run dev:backend` also run this schema sync automatically. If the
+Prisma schema changes while using Docker, rebuild the migration and service images so the
+database and generated client come from the same checkout:
+
+```bash
+docker compose up -d --build migrate backend-1 backend-2 worker web
 ```
 
 Start the services in separate terminals:
@@ -103,3 +111,39 @@ tool outputs, isolated subagents, verification gating, and a process-replacement
   lexical retrieval is implemented as a bounded Postgres event scan behind a retriever
   abstraction rather than adding a second SQLite database.
 - Secrets and user keys are encrypted at rest using AES-256-GCM. Plaintext is never stored or returned by the API, and secrets are redacted from anything the agent prints (see `packages/shared/redact.ts` and `apps/backend/src/userKeys.ts`).
+
+## Not in this version: payments, email and SMS
+
+Generated apps do not get real payments (Stripe and similar), sending email (Resend, SendGrid,
+Postmark, Mailgun) or sending text messages (Twilio and similar) in this version. They are planned
+for the next one.
+
+**Why.** Preview sandboxes run on Daytona Tier 1/2, which only lets a sandbox reach an allowlist of
+essential services. Measured from inside a sandbox: Neon (over HTTPS), Supabase, Clerk, OpenAI,
+Anthropic, Gemini, OpenRouter, npm and GitHub are reachable; Stripe, Resend, SendGrid, Twilio and
+the plain Postgres port (5432) are blocked. A payment or email feature would pass key verification
+and then never work in the preview.
+
+**What users get instead.** When a request includes payments, email or SMS, the agent does not ask
+for those keys. It builds that part as a realistic design-only flow (a pretend checkout that ends
+on a success screen, a confirmation instead of a sent message) with a small "Preview" note, tells
+the user in one sentence that the real feature is coming in a future version, and builds the rest
+of the request normally. This is enforced in two places: the system prompt, and
+`DEFERRED_SERVICES` in `apps/backend/src/keyRequest.ts`, which strips these keys from any key
+request even if the model asks for them.
+
+**Turning it on in the next version.**
+
+1. Move the Daytona organization to Tier 3 or higher (full internet access), or configure a
+   `domainAllowList` for the providers you support.
+2. Remove the service from `DEFERRED_SERVICES` in `apps/backend/src/keyRequest.ts`.
+3. Remove the "Payments, email and SMS are not part of this version" paragraph from
+   `apps/backend/src/sytemPrompt.ts` and add provider guidance back. Stripe notes that worked well
+   before: install only `stripe`; create `new Stripe(secretKey)` inside the route handler with no
+   `apiVersion`; in `checkout.sessions.create` pass `mode`, `line_items` (`price_data` with
+   `currency`, `unit_amount`, `product_data.name`), `success_url` and `cancel_url`, and do not pass
+   `payment_method_types`; return `{ url: session.url }` from `app/api/checkout/route.ts` and
+   redirect with `window.location.href`.
+4. The key checks already exist: `apps/backend/src/keyVerification.ts` verifies Stripe, Resend,
+   SendGrid, Postmark and Twilio keys with each provider, and `apps/backend/src/sandboxReach.ts`
+   confirms the sandbox can reach them before a key is accepted.
