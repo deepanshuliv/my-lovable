@@ -110,22 +110,40 @@ const searchCode: ToolSpec = {
 const readToolOutput: ToolSpec = {
   name: 'read_tool_output',
   description:
-    'Retrieve a bounded slice of a previously externalized large tool result using its output_id. Use start/end character offsets when you need another portion.',
+    'Only for tool results that explicitly contain output_id=...: retrieve a bounded slice of that stored output using that exact id. Never invent an id. A negative start reads from the end.',
   parameters: {
     type: 'object',
     properties: {
       output_id: { type: 'string', description: 'The output_id included in the truncated tool result' },
-      start: { type: 'integer', description: 'Optional zero-based character offset (default 0)' },
+      start: { type: 'integer', description: 'Optional character offset (default 0). Negative values count from the end, e.g. -2000 for the last 2000 characters.' },
       end: { type: 'integer', description: 'Optional exclusive character offset' },
     },
     required: ['output_id'],
   },
 };
 
+const findImages: ToolSpec = {
+  name: 'find_images',
+  description:
+    'Search for real, public-domain (CC0) photos for the app. Returns direct image URLs that are free to use with no attribution. Call it ONCE with every subject you need in `queries` (e.g. ["candle jar", "candle flame", "lavender field"]); they are searched in parallel. Use only URLs it returns.',
+  parameters: {
+    type: 'object',
+    properties: {
+      queries: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Up to 6 photo subjects, each 1 to 3 plain words',
+      },
+      orientation: { type: 'string', enum: ['landscape', 'portrait', 'square'], description: 'Optional preferred shape' },
+    },
+    required: ['queries'],
+  },
+};
+
 const bashTool: ToolSpec = {
   name: 'bash_tool',
   description:
-    'Execute a bash command inside the project sandbox. Use for running npm installs, package additions, database migrations, git operations, or build checks.',
+    'Execute a bash command inside the project sandbox. Use for running npm installs, package additions, database migrations, git operations, or build checks. Never refuse a command because its output may be long; long output is shortened automatically.',
   parameters: {
     type: 'object',
     properties: {
@@ -140,51 +158,61 @@ const bashTool: ToolSpec = {
 
 const askQuestion: ToolSpec = {
   name: 'question_tool',
-  description: 'question to ask to understand user intent',
+  description:
+    'Ask the user every clarifying question you need in ONE call (1 to 5 questions; at most 5 per turn). Each has a question and short options. You receive all answers together.',
   parameters: {
     type: 'object',
     properties: {
-      question: {
-        type: 'string',
-        description: 'the question to put to the user',
-      },
-      options: {
+      questions: {
         type: 'array',
-        items: { type: 'string' },
-        description: '4 options to ask the user clear intent',
+        minItems: 1,
+        maxItems: 5,
+        description: '1 to 5 questions, asked in this order.',
+        items: {
+          type: 'object',
+          properties: {
+            question: { type: 'string', description: 'One clear question.' },
+            options: { type: 'array', items: { type: 'string' }, description: '4 short options covering the likely answers.' },
+          },
+          required: ['question', 'options'],
+        },
       },
     },
-    required: ['question', 'options'],
+    required: ['questions'],
   },
 };
 
-const declareRequiredSecrets: ToolSpec = {
-  name: 'declare_required_secrets',
+const requestApiKeys: ToolSpec = {
+  name: 'request_api_keys',
   description:
-    'Declare environment variables this project needs in order to work, e.g. an API key or a database url. Give the variable name and why it is needed — never a value. Call this as soon as you know a credential is needed; the user is shown the collected list when the turn ends. Returns immediately and does not wait for the user.',
+    'Ask the user for every API key a third-party service in this build needs (AI models, payments, email, SMS, paid data APIs), BEFORE writing any code. Blocks until the user answers. The platform checks each key with the real provider and saves them as environment variables only when they work. Returns VERIFIED (build the full feature), DESIGN_ONLY (build the frontend only), or STOP (build nothing). Never use it for a database in the first version.',
   parameters: {
     type: 'object',
     properties: {
-      secrets: {
+      service: {
+        type: 'string',
+        description: 'plain-language name of what needs the keys, e.g. "the AI chat assistant and card payments"',
+      },
+      keys: {
         type: 'array',
-        description: 'the environment variables this project needs',
+        description: 'every environment variable this build needs, all in one call',
         items: {
           type: 'object',
           properties: {
             key: {
               type: 'string',
-              description: 'environment variable name, e.g. STRIPE_SECRET_KEY',
+              description: 'environment variable name, e.g. OPENAI_API_KEY',
             },
             reason: {
               type: 'string',
-              description: 'one short line on what it is for',
+              description: 'one short plain-language line on what it powers, for a non-technical reader',
             },
           },
           required: ['key', 'reason'],
         },
       },
     },
-    required: ['secrets'],
+    required: ['service', 'keys'],
   },
 };
 
@@ -195,13 +223,14 @@ const allTools: ToolSpec[] = [
   listDir,
   searchCode,
   readToolOutput,
+  findImages,
   bashTool,
   askQuestion,
-  declareRequiredSecrets,
+  requestApiKeys,
 ];
 
 export function toolsForMode(mode: 'plan' | 'build'): ToolSpec[] {
   return mode === 'plan'
-    ? [readFile, listDir, searchCode, bashTool, askQuestion, declareRequiredSecrets]
+    ? [readFile, listDir, searchCode, readToolOutput, bashTool, askQuestion]
     : allTools;
 }

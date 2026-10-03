@@ -1,3 +1,4 @@
+import { randomUUIDv7 } from 'bun';
 import cors from 'cors';
 import express, { type Request, type Response } from 'express';
 import { prisma } from '@repo/db';
@@ -5,6 +6,7 @@ import {
   acquireProjectLock,
   clearLiveness,
   connectToRedis,
+  keysForRequest,
   projectForQuestion,
   publishAnswer,
   releaseProjectLock,
@@ -14,6 +16,15 @@ import {
 import { createMemoryStore } from '@repo/memory';
 import { isStorageConfigured } from '@repo/storage';
 import { runAgent } from './src/agent';
+import { verifyKeys } from './src/keyVerification';
+import { submitKeyRequest } from './src/keyRequest';
+import { checkReachability } from './src/sandboxReach';
+import { friendlyError } from './src/utils/userErrors';
+import { checkLeaveTicket, heartbeat, leaveTicket, markLeft, markPresent } from './src/presence';
+import { chargePlatformUsage, clearInflightUsage, getCreditBalance, queuePendingCharge, trackInflightUsage } from './src/credits';
+import { startReconciler } from './src/reconciler';
+import { startPreviewProxy } from './src/previewProxy';
+import { flushRecentEvents } from './src/utils/recentEvents';
 import { isAuthConfigured, requireAuth, requireProjectAccess } from './src/auth';
 import {
   BACKEND_ID,
@@ -24,10 +35,11 @@ import {
 } from './src/config';
 import { createEmitter, emitDetached } from './src/utils/events';
 import { BYOK_MODELS, describeProvider, type ProviderOverride } from './src/providers';
-import { deriveTitle, generateProjectTitle } from './src/utils/naming';
+import { deriveTitle, fallbackTitle, generateProjectTitle, looksLikePrompt } from './src/utils/naming';
 import {
   deleteUserKey,
   isProvider,
+  checkProviderKey,
   isUserKeyStorageConfigured,
   listUserKeys,
   loadUserKey,
@@ -41,6 +53,7 @@ import {
   deleteProject,
   detachProject,
   ensureProjectRow,
+  runScriptInProject,
   listProjectsForOwner,
   loadEventsSince,
   loadHistory,
@@ -59,6 +72,24 @@ import {
   type SecretSummary,
 } from './src/utils/secrets';
 
+function lockHolder(): string {
+  return `${BACKEND_ID}:${randomUUIDv7()}`;
+}
+
+const activeRuns = new Map<string, () => void>();
+
+function onClientGone(req: Request, res: Response, callback: () => void) {
+  let fired = false;
+  const fire = () => {
+    if (fired || res.writableEnded) return;
+    fired = true;
+    callback();
+  };
+  res.on('close', fire);
+  req.on('aborted', fire);
+  req.socket?.on('close', fire);
+}
+
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN || 'http://localhost:3001')
@@ -72,6 +103,8 @@ app.use(cors({ origin: CORS_ANY ? '*' : ALLOWED_ORIGINS }));
 
 await connectToRedis();
 const memory = createMemoryStore();
+startReconciler();
+startPreviewProxy();
 
 console.log(`[BOOT] backend ${BACKEND_ID}`);
 
@@ -106,8 +139,6 @@ app.post('/projects', requireAuth, async (req: Request, res: Response) => {
 
   if (!prompt.trim()) return;
 
-  // Billed to the user's own key when they have one — their project, their call. Detached
-  
   void (async () => {
     try {
       const override = await loadUserKey(userId);
@@ -121,7 +152,20 @@ app.post('/projects', requireAuth, async (req: Request, res: Response) => {
 
 app.get('/projects', requireAuth, async (req: Request, res: Response) => {
   const projects = await listProjectsForOwner(req.userId!);
-  res.json({ projects });
+  const tidied = await Promise.all(
+    projects.map(async (project) => {
+      if (!looksLikePrompt(project.name)) return project;
+      const better = fallbackTitle(project.name);
+      if (!better || better === project.name) return project;
+      try {
+        await prisma.project.update({ where: { id: project.id }, data: { name: better, updatedAt: project.updatedAt } });
+        return { ...project, name: better };
+      } catch {
+        return project;
+      }
+    }),
+  );
+  res.json({ projects: tidied });
 });
 
 app.patch('/projects/:projectId', requireProjectAccess, async (req: Request, res: Response) => {
@@ -130,7 +174,7 @@ app.patch('/projects/:projectId', requireProjectAccess, async (req: Request, res
 
   if (!projectId) return res.status(400).json({ msg: 'please provide valid projectId' });
   if (!name) return res.status(400).json({ msg: 'name must not be empty' });
-  
+
   if (name.length > 120)
     return res.status(400).json({ msg: 'name must be 120 characters or fewer' });
 
@@ -142,16 +186,22 @@ app.delete('/projects/:projectId', requireProjectAccess, async (req: Request, re
   const projectId = param(req, 'projectId');
   if (!projectId) return res.status(400).json({ msg: 'please provide valid projectId' });
 
-  const lock = await acquireProjectLock(projectId, BACKEND_ID, !STRICT_OWNERSHIP);
+  const holder = lockHolder();
+  const lock = await acquireProjectLock(projectId, holder, !STRICT_OWNERSHIP);
   if (!lock.ok) {
     return res.status(409).json({ msg: 'this project is currently running' });
   }
+
+  await touchLiveness(projectId);
+  const stopHeartbeat = startHeartbeat(projectId, holder, () => {});
 
   try {
     await deleteProject(projectId);
     res.status(204).end();
   } finally {
-    await releaseProjectLock(projectId, BACKEND_ID);
+    stopHeartbeat();
+    await clearLiveness(projectId).catch(() => {});
+    await releaseProjectLock(projectId, holder);
   }
 });
 
@@ -164,13 +214,12 @@ app.get(
 
     const rawBefore = req.query.before;
     const parsedBefore = Number.parseInt(String(rawBefore ?? ''), 10);
-    // Only a positive integer means anything as a cursor; anything else is treated as "no
-    // cursor" rather than rejected, so a stray query string cannot 400 someone's project.
+
     const before = Number.isFinite(parsedBefore) && parsedBefore > 0 ? parsedBefore : undefined;
 
     const page = await loadHistory(projectId, HISTORY_PAGE_SIZE, before);
 
-    res.json({ events: page.events, hasMore: page.hasMore });
+    res.json({ events: page.events, hasMore: page.hasMore, source: page.source });
   },
 );
 
@@ -199,11 +248,10 @@ app.get(
   },
 );
 
-async function byokForUser(userId: string): Promise<ProviderOverride | undefined> {
+async function byokForUser(userId: string, provider?: unknown): Promise<ProviderOverride | undefined> {
   try {
-    return (await loadUserKey(userId)) ?? undefined;
+    return (await loadUserKey(userId, isProvider(provider) ? provider : undefined)) ?? undefined;
   } catch (error) {
-    
     console.log('[BYOK_LOAD_FAILED] , ', String((error as Error).message).slice(0, 200));
     return undefined;
   }
@@ -211,24 +259,41 @@ async function byokForUser(userId: string): Promise<ProviderOverride | undefined
 
 app.post('/chat/:projectId', requireProjectAccess, async (req: Request, res: Response) => {
   const projectId = param(req, 'projectId');
-  const { query, provider: requestedProvider, usePlatform } = req.body;
+  const { query, provider: requestedProvider, usePlatform } = req.body ?? {};
 
-  const mode: AgentMode = req.body?.mode === 'plan' ? 'plan' : 'build';
+  if (projectId) await markPresent(projectId);
 
-  const byok = usePlatform ? undefined : await byokForUser(req.userId!);
-  
-  const forcePlatformProvider =
-    usePlatform && (requestedProvider === 'openrouter' || requestedProvider === 'gemini')
-      ? requestedProvider
-      : undefined;
-
-  if (!projectId || !query) {
+  if (!projectId || typeof query !== 'string' || !query.trim()) {
     return res.status(400).json({
       msg: 'please provide valid projectId and query',
     });
   }
 
-  const lock = await acquireProjectLock(projectId, BACKEND_ID, !STRICT_OWNERSHIP);
+  const mode: AgentMode = req.body?.mode === 'plan' ? 'plan' : 'build';
+
+  const byok = usePlatform ? undefined : await byokForUser(req.userId!, requestedProvider);
+
+  let budgetMicros: number | undefined;
+  if (!byok) {
+    try {
+      const balance = await getCreditBalance(req.userId!);
+      if (balance.remainingMicros <= 0) {
+        return res.status(402).json({
+          msg: 'You have used all your free credits. Ask for more credits, or add your own AI key to keep building.',
+          code: 'credits_exhausted',
+          credits: balance,
+        });
+      }
+      budgetMicros = balance.remainingMicros;
+    } catch (error) {
+      console.log('[CREDITS_CHECK_FAILED] , ', String(error).slice(0, 200));
+    }
+  }
+
+  const forcePlatformProvider = byok || !process.env.OPENROUTER_API_KEY ? undefined : 'openrouter';
+
+  const holder = lockHolder();
+  const lock = await acquireProjectLock(projectId, holder, !STRICT_OWNERSHIP);
   if (!lock.ok) {
     return res.status(409).json({
       msg: 'this project is being worked on by another session',
@@ -249,7 +314,7 @@ app.post('/chat/:projectId', requireProjectAccess, async (req: Request, res: Res
   res.setHeader('Connection', 'keep-alive');
 
   res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders(); 
+  res.flushHeaders();
 
   await touchLiveness(projectId);
 
@@ -258,8 +323,7 @@ app.post('/chat/:projectId', requireProjectAccess, async (req: Request, res: Res
     let cancelled = false;
   let ownsProject = true;
 
-  const stopHeartbeat = startHeartbeat(projectId, BACKEND_ID, () => {
-
+  const stopHeartbeat = startHeartbeat(projectId, holder, () => {
     console.log('[LOCK_LOST] , ', projectId);
     cancelled = true;
     ownsProject = false;
@@ -268,26 +332,30 @@ app.post('/chat/:projectId', requireProjectAccess, async (req: Request, res: Res
     emitter.close();
   });
 
-  res.on('close', () => {
-    console.log('client dropped me');
+  const cancelRun = () => {
+    console.log('[CLIENT_GONE] , ', projectId);
     cancelled = true;
     emitter.close();
-  });
+  };
+  onClientGone(req, res, cancelRun);
+  activeRuns.set(projectId, cancelRun);
 
+  let completed = false;
+  let usageTimer: ReturnType<typeof setInterval> | undefined;
   try {
     await ensureProjectRow(projectId);
     const attached = await attachProject(projectId, emitter);
 
     if (cancelled) return;
 
-        const replayed =
+    const replayed =
       attached.origin === 'cached'
         ? []
         : (await loadEventsSince(projectId, attached.replayFromSeq)).map(
             (event) => `${event.type}: ${JSON.stringify(event.payload).slice(0, 400)}`,
           );
 
-    await runAgent(
+    const run = await runAgent(
       {
         projectId,
         entry: attached.entry,
@@ -298,23 +366,55 @@ app.post('/chat/:projectId', requireProjectAccess, async (req: Request, res: Res
         mode,
         byok,
         forcePlatformProvider,
+        budgetMicros,
+        onProvider: (provider) => {
+          if (byok) return;
+          usageTimer = setInterval(() => {
+            void trackInflightUsage(req.userId!, holder, provider).catch(() => {});
+          }, 2_000);
+        },
       },
       query,
     );
-  } catch (error) {
+    clearInterval(usageTimer);
 
+    if (!byok) {
+      try {
+        const charged = await chargePlatformUsage(req.userId!, holder, run.provider);
+        if (charged > 0) console.log('[CREDITS] charged', req.userId, charged, 'micros');
+      } catch (error) {
+        console.log('[CREDITS_CHARGE_DEFERRED] , ', String(error).slice(0, 200));
+        await queuePendingCharge(req.userId!, holder, run.provider).catch((queueError) => {
+          console.log('[CREDITS_CHARGE_LOST] , ', String(queueError).slice(0, 200));
+        });
+      }
+    }
+    completed = true;
+  } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.log('[CHAT_ERROR] , ', message);
     emitter.stream('error', { message });
     emitter.close();
   } finally {
+    clearInterval(usageTimer);
+    if (!byok) await clearInflightUsage(req.userId!, holder).catch(() => {});
     stopHeartbeat();
+    if (activeRuns.get(projectId) === cancelRun) activeRuns.delete(projectId);
 
     if (ownsProject) {
       await clearLiveness(projectId).catch(() => {});
-      await releaseProjectLock(projectId, BACKEND_ID).catch(() => {});
+      await releaseProjectLock(projectId, holder).catch(() => {});
     }
+    await flushRecentEvents(projectId).catch(() => {});
+    if (completed) await emitter.emit('done', {});
+    emitter.close();
   }
+});
+
+app.post('/chat/:projectId/cancel', requireProjectAccess, (req: Request, res: Response) => {
+  const cancel = activeRuns.get(param(req, 'projectId'));
+  cancel?.();
+  res.status(cancel ? 202 : 204).end();
 });
 
 app.post('/answer/:questionId', requireAuth, async (req: Request, res: Response) => {
@@ -330,6 +430,9 @@ app.post('/answer/:questionId', requireAuth, async (req: Request, res: Response)
   const projectId = await projectForQuestion(questionId);
   if (!projectId) {
     return res.status(400).json({ msg: 'your time period to answer expire' });
+  }
+  if (await keysForRequest(questionId)) {
+    return res.status(400).json({ msg: 'answer key requests through /keys/:requestId' });
   }
 
   const project = await prisma.project.findUnique({
@@ -352,6 +455,36 @@ app.post('/answer/:questionId', requireAuth, async (req: Request, res: Response)
   }
 
   res.status(201).json({ msg: 'your response recorded succefully' });
+});
+
+app.post('/keys/:requestId', requireAuth, async (req: Request, res: Response) => {
+  const result = await submitKeyRequest(
+    {
+      requestId: param(req, 'requestId') ?? '',
+      userId: req.userId!,
+      decline: req.body?.decline === true,
+      values: req.body?.values,
+    },
+    {
+      projectFor: projectForQuestion,
+      keysFor: keysForRequest,
+      ownerOf: async (projectId) =>
+        (await prisma.project.findUnique({ where: { id: projectId }, select: { ownerId: true } }))?.ownerId ?? null,
+      publish: publishAnswer,
+      storageReady: isSecretsConfigured,
+      verify: (values) => verifyKeys(values),
+      reachable: (projectId, values) => checkReachability(values, (script) => runScriptInProject(projectId, script)),
+      save: async (projectId, values) => {
+        await ensureProjectRow(projectId);
+        for (const [key, value] of Object.entries(values)) await upsertSecret(projectId, key, value);
+        await applySecretsToSandbox(projectId);
+        const attached = getCachedSandbox(projectId);
+        if (attached) await restartDevServer(attached);
+      },
+    },
+  );
+  if (result.status === 201 && result.body.status === 'verified') console.log('▸ keys verified', param(req, 'requestId'));
+  res.status(result.status).json(result.body);
 });
 
 app.get(
@@ -426,7 +559,7 @@ app.post(
         rejected.push({ key, msg: 'key must be an env var name like DATABASE_URL' });
         continue;
       }
-      
+
       if (value.length === 0) continue;
 
       try {
@@ -488,13 +621,11 @@ app.post(
       };
     });
 
-    // Server-side rate limit: max 20 batches per 30 seconds per project to prevent
-    // runaway render loops from exhausting backend streams or database storage.
     if (!checkClientErrorRateLimit(projectId)) {
       return res.status(429).json({ msg: 'client error rate limit exceeded, throttling' });
     }
 
-        await registerSecretsForRedaction(projectId).catch((error) => {
+    await registerSecretsForRedaction(projectId).catch((error) => {
       console.log('[CLIENT_ERRORS_REDACT_ARM_FAILED] , ', String(error).slice(0, 200));
     });
 
@@ -511,14 +642,30 @@ app.delete(
   async (req: Request, res: Response) => {
     const projectId = param(req, 'projectId');
     const key = param(req, 'key');
-    if (!projectId || !key)
+    if (!projectId || !isValidSecretKey(key))
       return res.status(400).json({ msg: 'please provide valid projectId and key' });
 
     await deleteSecret(projectId, key);
-    await applySecretsToSandbox(projectId).catch(() => {});
+
+    try {
+      await applySecretsToSandbox(projectId, [key]);
+      const attached = getCachedSandbox(projectId);
+      if (attached) await restartDevServer(attached);
+    } catch (error) {
+      console.log('[SECRETS_DELETE_REAPPLY] , ', String(error).slice(0, 200));
+    }
     res.status(204).end();
   },
 );
+
+app.get('/me/credits', requireAuth, async (req: Request, res: Response) => {
+  try {
+    res.json({ credits: await getCreditBalance(req.userId!, true) });
+  } catch (error) {
+    console.log('[CREDITS_READ_FAILED] , ', String(error).slice(0, 200));
+    res.status(503).json({ msg: 'credits are unavailable right now' });
+  }
+});
 
 app.get('/me/keys', requireAuth, async (req: Request, res: Response) => {
   res.json({
@@ -534,10 +681,15 @@ app.put('/me/keys', requireAuth, async (req: Request, res: Response) => {
     return res.status(503).json({ msg: 'key storage is not configured on this server' });
   }
   if (!isProvider(provider)) {
-    return res.status(400).json({ msg: 'provider must be openrouter or gemini' });
+    return res.status(400).json({ msg: 'Choose OpenRouter, OpenAI or Anthropic.' });
   }
   if (typeof apiKey !== 'string' || !apiKey.trim()) {
-    return res.status(400).json({ msg: 'apiKey must be a non-empty string' });
+    return res.status(400).json({ msg: 'Paste your API key first.' });
+  }
+
+  const keyCheck = await checkProviderKey(provider, apiKey);
+  if (!keyCheck.ok) {
+    return res.status(400).json({ msg: keyCheck.message });
   }
 
   try {
@@ -549,27 +701,51 @@ app.put('/me/keys', requireAuth, async (req: Request, res: Response) => {
     );
     res.status(201).json({ key });
   } catch (error) {
-
     console.log('[USER_KEY_SAVE_FAILED] , ', String((error as Error).message).slice(0, 200));
-    res.status(500).json({ msg: 'could not save that key' });
+    res.status(500).json({ msg: 'We could not save that key. Please try again.' });
   }
 });
 
 app.delete('/me/keys/:provider', requireAuth, async (req: Request, res: Response) => {
   const provider = param(req, 'provider');
   if (!isProvider(provider)) {
-    return res.status(400).json({ msg: 'provider must be openrouter or gemini' });
+    return res.status(400).json({ msg: 'unknown provider' });
   }
 
   await deleteUserKey(req.userId!, provider);
   res.status(204).end();
 });
 
-app.post('/projects/:projectId/wake', requireProjectAccess, async (req: Request, res: Response) => {
+app.post('/projects/:projectId/heartbeat', requireProjectAccess, async (req: Request, res: Response) => {
   const projectId = param(req, 'projectId');
   if (!projectId) return res.status(400).json({ msg: 'please provide valid projectId' });
 
-  const lock = await acquireProjectLock(projectId, BACKEND_ID, !STRICT_OWNERSHIP);
+  try {
+    res.json({ sandbox: await heartbeat(projectId), ticket: leaveTicket(projectId) });
+  } catch (error) {
+    console.log('[HEARTBEAT_FAILED] , ', projectId, String(error).slice(0, 200));
+    res.json({ sandbox: 'none', ticket: leaveTicket(projectId) });
+  }
+});
+
+app.post('/projects/:projectId/leave', async (req: Request, res: Response) => {
+  const projectId = param(req, 'projectId');
+  const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : '';
+  if (!projectId || !checkLeaveTicket(projectId, ticket)) return res.status(204).end();
+
+  await markLeft(projectId).catch((error) => {
+    console.log('[LEAVE_FAILED] , ', projectId, String(error).slice(0, 200));
+  });
+  res.status(204).end();
+});
+
+app.post('/projects/:projectId/wake', requireProjectAccess, async (req: Request, res: Response) => {
+  const projectId = param(req, 'projectId');
+  if (!projectId) return res.status(400).json({ msg: 'please provide valid projectId' });
+  await markPresent(projectId);
+
+  const holder = lockHolder();
+  const lock = await acquireProjectLock(projectId, holder, !STRICT_OWNERSHIP);
   if (!lock.ok) {
     return res.status(409).json({
       msg: 'this project is being worked on by another session',
@@ -594,32 +770,34 @@ app.post('/projects/:projectId/wake', requireProjectAccess, async (req: Request,
   const emitter = createEmitter(projectId, res);
 
   let ownsProject = true;
-  const stopHeartbeat = startHeartbeat(projectId, BACKEND_ID, () => {
+  const stopHeartbeat = startHeartbeat(projectId, holder, () => {
     ownsProject = false;
     emitter.stream('error', { message: 'lost ownership of this project' });
     detachProject(projectId);
     emitter.close();
   });
 
+  let attached = false;
   try {
     const attach = await attachProject(projectId, emitter);
+    attached = true;
     if (attach.previewUrl) {
       emitter.stream('preview_ready', { url: attach.previewUrl });
     }
   } catch (error) {
     console.log('[WAKE_FAILED] , ', String(error).slice(0, 200));
   } finally {
+    stopHeartbeat();
     if (ownsProject) {
-      stopHeartbeat();
-      clearLiveness(projectId).catch(() => {});
-      await releaseProjectLock(projectId, BACKEND_ID);
-      detachProject(projectId);
+      await clearLiveness(projectId).catch(() => {});
+      await releaseProjectLock(projectId, holder);
+      if (!attached) detachProject(projectId);
     }
     emitter.close();
   }
 });
 
-import { getGithubToken, listRepositories, createRepository, pushToGitHub, createOrUpdatePullRequest } from './src/github';
+import { getGithubToken, getGithubIdentity, isRepositoryEmpty, listRepositories, createRepository, pushToGitHub, createOrUpdatePullRequest } from './src/github';
 
 app.get('/github/status', requireAuth, async (req: Request, res: Response) => {
   const token = await getGithubToken(req.userId!);
@@ -634,7 +812,7 @@ app.get('/github/repositories', requireAuth, async (req: Request, res: Response)
     const repos = await listRepositories(token);
     res.json({ repositories: repos });
   } catch (error: any) {
-    res.status(500).json({ msg: error.message });
+    res.status(500).json({ msg: friendlyError(String(error?.message ?? 'GitHub request failed')) });
   }
 });
 
@@ -649,7 +827,7 @@ app.post('/github/repositories', requireAuth, async (req: Request, res: Response
     const repo = await createRepository(token, name, isPrivate);
     res.status(201).json({ repository: repo });
   } catch (error: any) {
-    res.status(500).json({ msg: error.message });
+    res.status(500).json({ msg: friendlyError(String(error?.message ?? 'GitHub request failed')) });
   }
 });
 
@@ -665,25 +843,37 @@ app.post('/projects/:projectId/github/push', requireProjectAccess, async (req: R
   if (!token) return res.status(401).json({ msg: 'GitHub not connected' });
 
   const { repository, title, body } = req.body;
-  if (!repository) return res.status(400).json({ msg: 'repository (owner/repo) is required' });
+  if (typeof repository !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+    return res.status(400).json({ msg: 'repository (owner/repo) is required' });
+  }
 
-  const lock = await acquireProjectLock(projectId, BACKEND_ID, !STRICT_OWNERSHIP);
+  const holder = lockHolder();
+  const lock = await acquireProjectLock(projectId, holder, !STRICT_OWNERSHIP);
   if (!lock.ok) {
     return res.status(409).json({ msg: 'this project is currently running', ownerId: lock.ownerId });
   }
 
+  await touchLiveness(projectId);
+
   try {
     let conn = await prisma.githubConnection.findUnique({ where: { projectId } });
-    const branch = conn?.branch || `lovable/${projectId}`;
-    
+    const switching = !conn || conn.repository !== repository;
+    const emptyRepo = switching ? await isRepositoryEmpty(token, repository).catch(() => false) : false;
+    const branch = switching ? (emptyRepo ? 'main' : `inkling/${projectId}`) : conn!.branch;
+
     if (!conn) {
       conn = await prisma.githubConnection.create({
         data: { projectId, repository, branch }
       });
+    } else if (conn.repository !== repository) {
+      conn = await prisma.githubConnection.update({
+        where: { projectId },
+        data: { repository, branch, prNumber: null, prUrl: null, lastSyncedCommit: null },
+      });
     }
 
     await ensureProjectRow(projectId);
-    
+
     const dummyEmitter = {
       projectId,
       emit: async () => 0,
@@ -692,17 +882,18 @@ app.post('/projects/:projectId/github/push', requireProjectAccess, async (req: R
       close: () => {},
     };
 
-    const stopHeartbeat = startHeartbeat(projectId, BACKEND_ID, () => {
+    const stopHeartbeat = startHeartbeat(projectId, holder, () => {
       detachProject(projectId);
     });
 
     let attach;
     try {
       attach = await attachProject(projectId, dummyEmitter);
-      
-      const { commitSha } = await pushToGitHub(attach.entry, repository, branch, token);
-      
-      const { prNumber, prUrl } = await createOrUpdatePullRequest(token, repository, branch, title || 'Update from Lovable AI', body || 'Automated update from Lovable AI.');
+
+      const author = await getGithubIdentity(token);
+      const { commitSha } = await pushToGitHub(attach.entry, repository, branch, token, author, branch !== 'main');
+
+      const { prNumber, prUrl } = await createOrUpdatePullRequest(token, repository, branch, title || 'Update from Inkling', body || 'Changes made with Inkling.');
 
       conn = await prisma.githubConnection.update({
         where: { projectId },
@@ -711,13 +902,15 @@ app.post('/projects/:projectId/github/push', requireProjectAccess, async (req: R
 
       res.json({ success: true, connection: conn });
     } catch (e: any) {
-      console.log('[GITHUB_PUSH_ERROR]', String(e));
-      res.status(500).json({ msg: e.message || 'Failed to push to GitHub' });
+      const message = String(e?.message || 'Failed to push to GitHub').split(token).join('***');
+      console.log('[GITHUB_PUSH_ERROR]', message);
+      res.status(500).json({ msg: friendlyError(message) });
     } finally {
       stopHeartbeat();
     }
   } finally {
-    await releaseProjectLock(projectId, BACKEND_ID);
+    await clearLiveness(projectId).catch(() => {});
+    await releaseProjectLock(projectId, holder);
   }
 });
 
