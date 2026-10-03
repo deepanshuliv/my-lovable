@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { ClerkProvider } from '@clerk/nextjs';
 import { Geist_Mono, Sedgwick_Ave } from 'next/font/google';
 import localFont from 'next/font/local';
@@ -28,10 +28,32 @@ const fontCode = Geist_Mono({
   variable: '--font-code',
 });
 
+const TITLE = 'Inkling: from an idea to a working app';
+const DESCRIPTION =
+  'Describe your idea in plain words. Inkling writes real code, runs it, and develops a working app in front of you.';
+
 export const metadata: Metadata = {
-  title: 'Inkling: from an idea to a working app',
-  description:
-    'Describe your idea in plain words. Inkling writes real code, runs it, and develops a working app in front of you.',
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3001'),
+  title: { default: TITLE, template: '%s | Inkling' },
+  description: DESCRIPTION,
+  applicationName: 'Inkling',
+  openGraph: {
+    type: 'website',
+    siteName: 'Inkling',
+    title: TITLE,
+    description: DESCRIPTION,
+    images: [{ url: '/sites/yoga.jpg', alt: 'A yoga booking website built with Inkling' }],
+  },
+  twitter: { card: 'summary_large_image', title: TITLE, description: DESCRIPTION, images: ['/sites/yoga.jpg'] },
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#fafafa' },
+    { media: '(prefers-color-scheme: dark)', color: '#111210' },
+  ],
 };
 
 const clerkAppearance = {
@@ -80,6 +102,8 @@ const clerkAppearance = {
       borderRadius: '14px',
     },
     avatarBox: { borderRadius: '8px', border: '2px solid #1c1d1a' },
+    userButtonTrigger: { borderRadius: '10px' },
+    userButtonAvatarBox: { width: '40px', height: '40px', borderRadius: '10px' },
   },
 };
 

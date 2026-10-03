@@ -525,3 +525,11 @@ p {
     display: none;
   }
 }
+
+@media (max-width: 640px) {
+  input:not([type='checkbox']):not([type='radio']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
