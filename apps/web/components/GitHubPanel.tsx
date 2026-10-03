@@ -215,7 +215,7 @@ export default function GitHubPanel({
               <p className="text-[12px] text-[var(--muted)]">Saving to</p>
               <p className="mt-1 flex items-center gap-2 font-mono text-[13px]">
                 <GithubLogo size={14} weight="fill" className="shrink-0" />
-                {connection.repository}
+                <span className="min-w-0 break-all">{connection.repository}</span>
               </p>
               <p className="mt-2 flex items-center gap-2 font-mono text-[12px] text-[var(--muted)]">
                 <GitBranch size={14} className="shrink-0" />

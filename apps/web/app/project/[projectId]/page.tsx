@@ -307,7 +307,17 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       setProgress(START_PROGRESS);
       setStatus('Getting started');
 
-      const token = await getToken();
+      let token: Awaited<ReturnType<typeof getToken>>;
+      try {
+        token = await getToken();
+      } catch {
+        busyRef.current = false;
+        setBusy(false);
+        setStatus(null);
+        lastQueryFailedRef.current = true;
+        push({ kind: 'error', id: crypto.randomUUID(), message: 'Your session expired. Refresh the page and try again.' });
+        return;
+      }
 
       streamRef.current = openChatStream(
         token,
@@ -397,16 +407,33 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
             : item,
         ),
       );
-      await sendAnswer(await getToken(), questionId, value);
+      try {
+        await sendAnswer(await getToken(), questionId, value);
+      } catch {
+        setItems((prev) =>
+          prev.map((item) => {
+            if (item.kind !== 'question' || item.questionId !== questionId) return item;
+            const { answer: _answer, ...rest } = item;
+            return rest;
+          }),
+        );
+        push({ kind: 'error', id: crypto.randomUUID(), message: 'Your answer did not go through. Pick an option again.' });
+      }
     },
-    [getToken],
+    [getToken, push],
   );
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      const history = await fetchHistory(await getToken(), projectId);
+      let history: Awaited<ReturnType<typeof fetchHistory>> = { events: [], hasMore: false };
+      try {
+        history = await fetchHistory(await getToken(), projectId);
+      } catch {
+        if (cancelled) return;
+        push({ kind: 'error', id: crypto.randomUUID(), message: 'We could not load this chat. Check your connection and refresh the page.' });
+      }
       if (cancelled) return;
 
       if (history.events.length > 0) {
@@ -437,17 +464,23 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
 
   useEffect(() => {
     let handle: ChatStreamHandle | null = null;
+    let cancelled = false;
 
     if (!initialQuery) {
       void (async () => {
-        handle = wakeProjectStream(await getToken(), projectId, handleEvent, (error) => {
-          if (error) console.error('Wake failed:', error);
-          setStatus(null);
-        });
+        let token: Awaited<ReturnType<typeof getToken>>;
+        try {
+          token = await getToken();
+        } catch {
+          return;
+        }
+        if (cancelled) return;
+        handle = wakeProjectStream(token, projectId, handleEvent, () => setStatus(null));
       })();
     }
 
     return () => {
+      cancelled = true;
       if (handle) handle.abort();
     };
   }, [projectId]);
@@ -487,7 +520,12 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
     let cancelled = false;
 
     void (async () => {
-      const { keys } = await getMyKeys(await getToken());
+      let keys: StoredKey[];
+      try {
+        ({ keys } = await getMyKeys(await getToken()));
+      } catch {
+        return;
+      }
       if (cancelled) return;
       setSavedKeys(keys);
       const pref = getProviderPreference();
@@ -514,10 +552,12 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       }
 
       setHasMore(page.hasMore);
+    } catch {
+      push({ kind: 'error', id: crypto.randomUUID(), message: 'We could not load earlier messages. Try again in a moment.' });
     } finally {
       setLoadingEarlier(false);
     }
-  }, [getToken, hasMore, loadingEarlier, projectId]);
+  }, [getToken, hasMore, loadingEarlier, projectId, push]);
 
   const changeMode = useCallback((next: AgentMode) => {
     modeRef.current = next;
@@ -556,12 +596,17 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
 
   const forgetByok = useCallback(
     async (provider: ByokProvider) => {
-      await deleteMyKey(await getToken(), provider);
+      try {
+        await deleteMyKey(await getToken(), provider);
+      } catch {
+        push({ kind: 'error', id: crypto.randomUUID(), message: 'We could not remove that key. Try again in a moment.' });
+        return;
+      }
       setSavedKeys((prev) => prev.filter((item) => item.provider !== provider));
       setByokFor(null);
       if (!providerPref.usePlatform && providerPref.provider === provider) choosePreference(DEFAULT_PREFERENCE);
     },
-    [choosePreference, getToken, providerPref],
+    [choosePreference, getToken, providerPref, push],
   );
 
     const handleClientErrors = useCallback(
@@ -573,9 +618,13 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       for (const error of fresh) reportedErrorsRef.current.add(error.message);
 
       push({ kind: 'clientErrors', id: crypto.randomUUID(), errors: fresh });
-      void (async () => reportClientErrors(await getToken(), projectId, fresh))();
+      void (async () => {
+        try {
+          await reportClientErrors(await getToken(), projectId, fresh);
+        } catch {}
+      })();
     },
-    [projectId, push],
+    [getToken, projectId, push],
   );
 
     const requiredSecrets = useMemo(() => {
@@ -643,7 +692,7 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
-          <button onClick={() => setSecretsOpen(true)} className="btn-ghost btn-sm relative" title="Keys your app uses, like payments or email">
+          <button onClick={() => setSecretsOpen(true)} className="btn-ghost btn-sm relative" title="Keys your app uses, like payments or email" aria-label="App settings">
             <Sliders size={15} />
             <span className="hidden lg:inline">App settings</span>
             {requiredSecrets.length > 0 && (
@@ -653,7 +702,7 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
             )}
           </button>
 
-          <button onClick={() => setGithubOpen(true)} className="btn-ghost btn-sm" title="Save your code to GitHub">
+          <button onClick={() => setGithubOpen(true)} className="btn-ghost btn-sm" title="Save your code to GitHub" aria-label="GitHub">
             <GithubLogo size={15} weight="fill" />
             <span className="hidden lg:inline">GitHub</span>
           </button>
@@ -663,72 +712,74 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
             <CreditsPill />
           </span>
 
-          <span className="ml-1 flex h-9 items-center">
+          <span className="ml-1 flex h-10 items-center">
             <UserButton />
           </span>
         </div>
       </header>
 
-      <div className="flex shrink-0 gap-1 border-b-2 border-[var(--edge)] bg-[var(--cream)] p-2 md:hidden" role="tablist">
-        {(['chat', 'preview'] as const).map((view) => (
-          <button
-            key={view}
-            role="tab"
-            aria-selected={mobileView === view}
-            onClick={() => setMobileView(view)}
-            className={`flex-1 rounded-[8px] py-2 text-[13px] font-medium capitalize transition-colors ${
-              mobileView === view ? 'border-2 border-[var(--edge)] bg-[var(--lime)] font-bold' : 'border-2 border-transparent text-[var(--muted)]'
-            }`}
+      <main className="flex min-h-0 flex-1 flex-col">
+        <div className="flex shrink-0 gap-1 border-b-2 border-[var(--edge)] bg-[var(--cream)] p-2 md:hidden" role="tablist">
+          {(['chat', 'preview'] as const).map((view) => (
+            <button
+              key={view}
+              role="tab"
+              aria-selected={mobileView === view}
+              onClick={() => setMobileView(view)}
+              className={`flex-1 rounded-[8px] py-2 text-[13px] font-medium capitalize transition-colors ${
+                mobileView === view ? 'border-2 border-[var(--edge)] bg-[var(--lime)] font-bold' : 'border-2 border-transparent text-[var(--muted)]'
+              }`}
+            >
+              {view}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex min-h-0 flex-1">
+          <div
+            className={`${mobileView === 'chat' ? 'flex' : 'hidden'} w-full shrink-0 flex-col border-[var(--edge)] bg-[var(--paper)] md:flex md:w-[380px] md:border-r-2 xl:w-[440px]`}
           >
-            {view}
-          </button>
-        ))}
-      </div>
+            <ChatPanel
+              items={items}
+              busy={busy}
+              status={status}
+              queued={queued}
+              stopping={stopping}
+              paused={paused}
+              mode={mode}
+              onModeChange={changeMode}
+              onSend={send}
+              onAnswer={answer}
+              onCancelQueued={cancelQueued}
+              onStop={stopTurn}
+              onResumeQueue={resumeQueue}
+              onOpenSecrets={() => setSecretsOpen(true)}
+              onOpenByok={() => setByokFor(providerPref.usePlatform ? 'openrouter' : providerPref.provider)}
+              hasEarlier={hasMore}
+              loadingEarlier={loadingEarlier}
+              onLoadEarlier={() => void loadEarlier()}
+              draft={draft}
+              setDraft={setDraft}
+              providerPref={providerPref}
+              onProviderChange={handleProviderChange}
+              platformCreditsLeft={credits?.remainingUnits ?? null}
+              savedKeyProviders={savedKeys.map((key) => key.provider)}
+            />
+          </div>
 
-      <div className="flex min-h-0 flex-1">
-        <div
-          className={`${mobileView === 'chat' ? 'flex' : 'hidden'} w-full shrink-0 flex-col border-[var(--edge)] bg-[var(--paper)] md:flex md:w-[380px] md:border-r-2 xl:w-[440px]`}
-        >
-          <ChatPanel
-            items={items}
-            busy={busy}
-            status={status}
-            queued={queued}
-            stopping={stopping}
-            paused={paused}
-            mode={mode}
-            onModeChange={changeMode}
-            onSend={send}
-            onAnswer={answer}
-            onCancelQueued={cancelQueued}
-            onStop={stopTurn}
-            onResumeQueue={resumeQueue}
-            onOpenSecrets={() => setSecretsOpen(true)}
-            onOpenByok={() => setByokFor(providerPref.usePlatform ? 'openrouter' : providerPref.provider)}
-            hasEarlier={hasMore}
-            loadingEarlier={loadingEarlier}
-            onLoadEarlier={() => void loadEarlier()}
-            draft={draft}
-            setDraft={setDraft}
-            providerPref={providerPref}
-            onProviderChange={handleProviderChange}
-            platformCreditsLeft={credits?.remainingUnits ?? null}
-            savedKeyProviders={savedKeys.map((key) => key.provider)}
-          />
+          <div className={`${mobileView === 'preview' ? 'block' : 'hidden'} min-w-0 flex-1 bg-[var(--cream)] p-2 md:block md:p-4`}>
+            <PreviewPanel
+              url={previewUrl}
+              reloadToken={reloadToken}
+              onManualReload={() => setReloadToken((n) => n + 1)}
+              onClientErrors={handleClientErrors}
+              building={busy}
+              progress={progress}
+              appBuilt={appBuilt}
+            />
+          </div>
         </div>
-
-        <div className={`${mobileView === 'preview' ? 'block' : 'hidden'} min-w-0 flex-1 bg-[var(--cream)] p-2 md:block md:p-4`}>
-          <PreviewPanel
-            url={previewUrl}
-            reloadToken={reloadToken}
-            onManualReload={() => setReloadToken((n) => n + 1)}
-            onClientErrors={handleClientErrors}
-            building={busy}
-            progress={progress}
-            appBuilt={appBuilt}
-          />
-        </div>
-      </div>
+      </main>
 
       {secretsOpen && (
         <SecretsPanel

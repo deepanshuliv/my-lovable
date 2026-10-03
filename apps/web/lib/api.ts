@@ -104,11 +104,12 @@ export async function fetchHistory(token: Token, projectId: string, before?: num
 }
 
 export async function sendAnswer(token: Token, questionId: string, answer: string) {
-  await fetch(`${API_URL}/answer/${questionId}`, {
+  const response = await fetch(`${API_URL}/answer/${questionId}`, {
     method: 'POST',
     headers: authHeaders(token, true),
     body: JSON.stringify({ answer }),
   });
+  if (!response.ok) throw new Error(`Answer failed with ${response.status}`);
 }
 
 export type KeySubmission =
@@ -145,15 +146,16 @@ export async function fetchSecrets(token: Token, projectId: string) {
   const response = await fetch(`${API_URL}/projects/${projectId}/secrets`, {
     headers: authHeaders(token),
   });
-  if (!response.ok) return { secrets: [] as SecretSummary[], enabled: false };
+  if (!response.ok) throw new Error(`Secrets failed with ${response.status}`);
   return (await response.json()) as { secrets: SecretSummary[]; enabled: boolean };
 }
 
 export async function removeSecret(token: Token, projectId: string, key: string) {
-  await fetch(`${API_URL}/projects/${projectId}/secrets/${encodeURIComponent(key)}`, {
+  const response = await fetch(`${API_URL}/projects/${projectId}/secrets/${encodeURIComponent(key)}`, {
     method: 'DELETE',
     headers: authHeaders(token),
   });
+  if (!response.ok) throw new Error(`Remove failed with ${response.status}`);
 }
 
 export async function saveSecretsBatch(
@@ -439,10 +441,11 @@ export async function saveMyKey(
 }
 
 export async function deleteMyKey(token: Token, provider: StoredKey['provider']) {
-  await fetch(`${API_URL}/me/keys/${provider}`, {
+  const response = await fetch(`${API_URL}/me/keys/${provider}`, {
     method: 'DELETE',
     headers: authHeaders(token),
   });
+  if (!response.ok) throw new Error(`Delete failed with ${response.status}`);
 }
 
 export async function fetchGithubStatus(token: Token) {

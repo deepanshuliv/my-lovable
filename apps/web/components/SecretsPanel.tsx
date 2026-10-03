@@ -1,7 +1,7 @@
 'use client';
 
 import { Check, Plus, Trash } from '@phosphor-icons/react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchSecrets, removeSecret, saveSecretsBatch } from '@/lib/api';
 import { useToken } from '@/lib/useToken';
 import type { RequiredSecret, SecretSummary } from '@/lib/types';
@@ -29,14 +29,33 @@ export default function SecretsPanel({
   const [saving, setSaving] = useState(false);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    let live = true;
     void (async () => {
-      const data = await fetchSecrets(await getToken(), projectId);
-      setSecrets(data.secrets);
-      setEnabled(data.enabled);
+      try {
+        const data = await fetchSecrets(await getToken(), projectId);
+        if (!live) return;
+        setSecrets(data.secrets);
+        setEnabled(data.enabled);
+        setLoadState('ready');
+      } catch {
+        if (live) setLoadState('error');
+      }
     })();
+    return () => {
+      live = false;
+    };
   }, [projectId, getToken]);
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    },
+    [],
+  );
 
   const savedKeys = useMemo(() => new Set(secrets.map((s) => s.key)), [secrets]);
 
@@ -101,7 +120,7 @@ export default function SecretsPanel({
       if (accepted.size > 0) {
         setSavedNote(`Saved ${accepted.size === 1 ? 'it' : `all ${accepted.size}`}. Your app is restarting.`);
         onSaved?.([...accepted]);
-        setTimeout(() => {
+        closeTimer.current = setTimeout(() => {
           onClose();
         }, 1500);
       }
@@ -113,8 +132,12 @@ export default function SecretsPanel({
   }
 
   async function remove(secretKey: string) {
-    await removeSecret(await getToken(), projectId, secretKey);
-    setSecrets((prev) => prev.filter((s) => s.key !== secretKey));
+    try {
+      await removeSecret(await getToken(), projectId, secretKey);
+      setSecrets((prev) => prev.filter((s) => s.key !== secretKey));
+    } catch {
+      setError(`We could not remove ${secretKey}. Try again in a moment.`);
+    }
   }
 
   return (
@@ -130,14 +153,20 @@ export default function SecretsPanel({
       footer={
         <div className="flex items-center justify-between gap-3">
           <p className="text-[12px] text-[var(--muted)]">{savedNote ?? (filledCount > 0 ? 'Your app restarts to use them.' : '')}</p>
-          <button onClick={submit} disabled={!enabled || saving || filledCount === 0} className="btn-primary shrink-0">
+          <button onClick={submit} disabled={loadState !== 'ready' || !enabled || saving || filledCount === 0} className="btn-primary shrink-0">
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
       }
     >
       <div className="space-y-6">
-        {!enabled && (
+        {loadState === 'loading' && <p className="text-[13px] font-medium text-[var(--muted)]">Loading your saved keys…</p>}
+        {loadState === 'error' && (
+          <p role="alert" className="rounded-[10px] border-2 border-[var(--edge)] bg-[var(--error-card)] px-4 py-3 text-[13px] font-medium leading-relaxed">
+            We could not load your saved keys. Close this and try again in a moment.
+          </p>
+        )}
+        {loadState === 'ready' && !enabled && (
           <p className="rounded-[10px] border-2 border-[var(--edge)] bg-[var(--error-card)] px-4 py-3 text-[13px] font-medium leading-relaxed">
             Saving keys is turned off on this server. Ask whoever runs it to set{' '}
             <code className="font-mono text-[12px]">SECRETS_MASTER_KEY</code>.
@@ -174,9 +203,9 @@ export default function SecretsPanel({
                 <code className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{secret.key}</code>
                 <span className="font-mono text-[12px] text-[var(--muted)]">{secret.maskedPreview}</span>
                 <button
-                  onClick={() => remove(secret.key)}
+                  onClick={() => void remove(secret.key)}
                   aria-label={`Remove ${secret.key}`}
-                  className="flex h-7 w-7 items-center justify-center rounded-[6px] text-[var(--muted)] transition-colors hover:bg-[var(--tint)] hover:text-[var(--error)]"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] text-[var(--muted)] transition-colors hover:bg-[var(--tint)] hover:text-[var(--error)]"
                 >
                   <Trash size={14} />
                 </button>
