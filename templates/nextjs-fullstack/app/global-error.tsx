@@ -28,7 +28,6 @@ export default function GlobalError({
           '*',
         );
       } catch {
-        // ignore
       }
     }
   }, [error]);

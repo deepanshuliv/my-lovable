@@ -1,24 +1,3 @@
-/**
- * Bake a Daytona snapshot from the project template.
- *
- * This is the answer to "should the starter live in GitHub or be initialised fresh every
- * time?" — neither, in the end. Both of those pay a full `npm install` on every new
- * project, which is the expensive part: a few hundred packages resolved over the network
- * while the user watches a spinner.
- *
- * Instead the install happens exactly once, here, and the result is frozen into a
- * snapshot. Creating a sandbox from it starts with `node_modules` already on disk, so a
- * new project goes from a minute or two to seconds.
- *
- * The template in git stays the source of truth — this reads from it. Rebake whenever the
- * template's dependencies change:
- *
- *   bun scripts/bake-snapshot.ts
- *   # then set in .env:
- *   TEMPLATE_SOURCE=snapshot
- *   TEMPLATE_SNAPSHOT=<the name printed below>
- */
-
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { Daytona } from '@daytona/sdk';
@@ -73,8 +52,6 @@ async function main() {
     throw new Error('npm install failed — not baking a broken snapshot');
   }
 
-  // Warm the Next build cache too: the first `next dev` otherwise spends time compiling
-  // that the user would sit through.
   console.log('▸ warming the build cache');
   await sandbox.process.executeCommand('npm run build || true', rootDir, undefined, 900);
 

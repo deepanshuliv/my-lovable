@@ -2,7 +2,6 @@
 
 import { useEffect } from 'react';
 
-/** Must match `PREVIEW_ERROR_TAG` in the builder's PreviewPanel. */
 const TAG = 'my-lovable:client-errors';
 
 export default function ErrorBoundary({
@@ -13,7 +12,6 @@ export default function ErrorBoundary({
   reset: () => void;
 }) {
   useEffect(() => {
-    // Report error to builder UI via postMessage
     if (typeof window !== 'undefined' && window.parent !== window) {
       try {
         window.parent.postMessage(
@@ -30,7 +28,6 @@ export default function ErrorBoundary({
           '*',
         );
       } catch {
-        // ignore
       }
     }
   }, [error]);
