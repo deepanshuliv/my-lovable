@@ -100,16 +100,16 @@ export default function CreditsPill() {
 
   useEffect(() => {
     if (!open) return;
-    const onDown = (event: MouseEvent) => {
+    const onDown = (event: PointerEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
     };
-    document.addEventListener('mousedown', onDown);
+    document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
     return () => {
-      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('pointerdown', onDown);
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
@@ -120,10 +120,11 @@ export default function CreditsPill() {
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         title="Your free credits"
+        aria-label={`Credits: ${credits ? left : 'loading'}`}
         className="flex h-10 items-center gap-2.5 rounded-[10px] bg-[var(--ink)] py-1.5 pl-3.5 pr-1.5 text-[12.5px] font-bold uppercase text-white transition-transform active:translate-y-px"
       >
         <Coins size={16} weight="fill" className={low ? 'text-[#ffcb57]' : 'text-[var(--lime)]'} />
-        Credits
+        <span className="hidden sm:inline">Credits</span>
         <span
           className={`flex h-7 min-w-7 items-center justify-center rounded-[6px] px-1.5 font-mono text-[12.5px] tabular-nums ${
             low ? 'bg-[#ffcb57] text-[var(--ink)]' : 'bg-[var(--lime)] text-[var(--ink)]'
@@ -134,7 +135,7 @@ export default function CreditsPill() {
       </button>
 
       {open && (
-        <div className="rise-in absolute right-0 top-full z-[var(--z-modal)] mt-2 w-[300px] rounded-[14px] border-2 border-[var(--edge)] bg-[var(--panel)] p-4 shadow-[var(--hard)]">
+        <div className="rise-in absolute right-0 top-full z-[var(--z-modal)] mt-2 w-[min(300px,calc(100vw-24px))] rounded-[14px] border-2 border-[var(--edge)] bg-[var(--panel)] p-4 shadow-[var(--hard)]">
           <CreditsSummary credits={credits} />
           <div className="mt-4 border-t border-[var(--line)] pt-4">
             <RequestCredits credits={credits} compact />

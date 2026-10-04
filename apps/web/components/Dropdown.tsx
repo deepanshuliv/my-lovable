@@ -43,11 +43,11 @@ export default function Dropdown({
     }
 
     if (open) {
-      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('pointerdown', handleClickOutside);
       document.addEventListener('keydown', handleEscape);
     }
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('pointerdown', handleClickOutside);
       document.removeEventListener('keydown', handleEscape);
     };
   }, [open]);

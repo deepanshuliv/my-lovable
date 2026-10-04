@@ -95,7 +95,7 @@ export default function ByokModal({
       <div className="space-y-6">
         <div>
           <span className="field-label">1. Choose your provider</span>
-          <div className="grid grid-cols-3 gap-2" role="radiogroup">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" role="radiogroup">
             {PROVIDERS.map((p) => (
               <button
                 key={p.id}

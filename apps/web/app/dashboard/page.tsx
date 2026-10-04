@@ -2,7 +2,7 @@
 
 import { useUser } from '@clerk/nextjs';
 import { useRouter } from 'next/navigation';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import DashboardProjectGrid from '@/components/DashboardProjectGrid';
 import PromptBox from '@/components/PromptBox';
 import { Note } from '@/components/lime';
@@ -25,6 +25,11 @@ export default function DashboardPage() {
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hello, setHello] = useState('Hello');
+
+  useEffect(() => {
+    setHello(greeting());
+  }, []);
 
   const createAndGo = useCallback(
     async (text: string) => {
@@ -54,10 +59,10 @@ export default function DashboardPage() {
   return (
     <div className="pb-24">
       <section className="relative overflow-hidden bg-[var(--paper)]">
-        <div aria-hidden="true" className="absolute left-1/2 top-[-55%] aspect-square w-[min(1000px,150vw)] -translate-x-1/2 rounded-full bg-[var(--soft)]" />
+        <div aria-hidden="true" className="absolute left-1/2 top-[-55%] aspect-square w-[min(1000px,150vw)] -translate-x-1/2 rounded-full bg-[var(--soft)] [mask-image:linear-gradient(to_bottom,black_60%,transparent_95%)]" />
         <div className="relative mx-auto flex w-full max-w-[760px] flex-col items-center px-5 pb-16 pt-14 text-center md:pb-20 md:pt-20">
           <span className="inline-flex items-center gap-2 rounded-[8px] bg-[var(--ink)] px-3 py-1.5 text-[13.5px] font-medium text-white">
-            {greeting()}
+            {hello}
             {user?.firstName ? `, ${user.firstName}` : ''}
           </span>
           <h1 className="display mt-6 flex flex-wrap items-center justify-center gap-x-3 text-[clamp(36px,5vw,60px)]">

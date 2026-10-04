@@ -102,6 +102,7 @@ export default function ChatPanel({
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const firstIdRef = useRef<string | null>(null);
+  const stickRef = useRef(true);
 
   useEffect(() => {
     const firstId = items[0]?.id ?? null;
@@ -110,8 +111,9 @@ export default function ChatPanel({
     firstIdRef.current = firstId;
 
     if (prepended) return;
+    if (items[items.length - 1]?.kind === 'user') stickRef.current = true;
     const list = listRef.current;
-    if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
+    if (list && stickRef.current) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
   }, [items, status]);
 
   const rows = groupRows(items);
@@ -122,7 +124,14 @@ export default function ChatPanel({
 
   return (
     <>
-      <div ref={listRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5">
+      <div
+        ref={listRef}
+        onScroll={(event) => {
+          const el = event.currentTarget;
+          stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+        }}
+        className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5"
+      >
         {hasEarlier && (
           <div className="flex justify-center">
             <button onClick={onLoadEarlier} disabled={loadingEarlier} className="btn-ghost btn-sm">
@@ -298,7 +307,7 @@ function ToolLine({ item }: { item: ToolItem }) {
         ) : canExpand ? (
           <button
             onClick={() => setOpen((value) => !value)}
-            className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-[var(--muted)] transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]"
+            className="shrink-0 rounded-md px-2 py-2 text-[11px] text-[var(--muted)] sm:px-1.5 sm:py-0.5 transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]"
           >
             {open ? 'Hide' : item.isError ? 'Why' : 'Output'}
           </button>
@@ -414,7 +423,7 @@ function ChatRow({
   if (item.kind === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-[14px] rounded-br-[4px] border-2 border-[var(--edge)] bg-[var(--lime)] px-4 py-2.5 text-[14px] font-medium leading-relaxed shadow-[var(--hard-sm)]">
+        <div className="max-w-[85%] whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-[14px] rounded-br-[4px] border-2 border-[var(--edge)] bg-[var(--lime)] px-4 py-2.5 text-[14px] font-medium leading-relaxed shadow-[var(--hard-sm)]">
           {item.text}
         </div>
       </div>
@@ -427,7 +436,7 @@ function ChatRow({
       return <AuthCard message={item.text} onOpenByok={onOpenByok} />;
 
     return (
-      <div className="text-[13.5px] leading-relaxed text-[var(--text)]/90">
+      <div className="min-w-0 break-words text-[13.5px] leading-relaxed text-[var(--text)]/90 [overflow-wrap:anywhere]">
         <ReactMarkdown components={markdownComponents}>{item.text}</ReactMarkdown>
         {item.streaming && (
           <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-[var(--accent)] align-middle" />

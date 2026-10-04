@@ -131,7 +131,7 @@ export default function Composer({
               <button
                 onClick={() => onCancelQueued(item.id)}
                 aria-label="Remove from queue"
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[6px] transition-colors hover:bg-[var(--tint)] sm:h-6 sm:w-6 hover:text-[var(--text)]"
               >
                 <X size={12} weight="bold" />
               </button>
@@ -150,7 +150,7 @@ export default function Composer({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !window.matchMedia('(pointer: coarse)').matches) {
               e.preventDefault();
               submit();
             }
@@ -174,7 +174,7 @@ export default function Composer({
               direction="up"
               width={240}
               trigger={
-                <button className="flex items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[12px] font-bold text-[var(--muted)] transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]" title="Build changes the app. Plan only suggests.">
+                <button className="flex items-center gap-1.5 rounded-[8px] px-2.5 py-2.5 text-[12px] font-bold text-[var(--muted)] sm:py-1.5 transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]" title="Build changes the app. Plan only suggests.">
                   <ModeIcon size={13} weight="bold" className={mode === 'build' ? 'text-[var(--accent-text)]' : ''} />
                   {currentModeOption.label}
                   <CaretUp size={10} weight="bold" className="opacity-60" />
@@ -188,7 +188,7 @@ export default function Composer({
               direction="up"
               width={240}
               trigger={
-                <button className="flex min-w-0 items-center gap-1.5 rounded-[8px] px-2.5 py-1.5 text-[12px] font-bold text-[var(--muted)] transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]" title="Which AI model to use">
+                <button className="flex min-w-0 items-center gap-1.5 rounded-[8px] px-2.5 py-2.5 text-[12px] font-bold text-[var(--muted)] sm:py-1.5 transition-colors hover:bg-[var(--tint)] hover:text-[var(--text)]" title="Which AI model to use">
                   <span className="truncate font-medium text-[var(--text)]/80">{activeLabel}</span>
                   <CaretUp size={10} weight="bold" className="shrink-0 opacity-60" />
                 </button>

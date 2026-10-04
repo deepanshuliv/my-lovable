@@ -157,7 +157,7 @@ export default function DashboardProjectGrid({ onStart }: { onStart?: () => void
                   aria-label={label}
                   title={label}
                   onClick={() => toggleViewMode(mode)}
-                  className={`flex h-8 w-9 items-center justify-center rounded-[7px] transition-colors ${
+                  className={`flex h-9 w-10 items-center justify-center rounded-[7px] sm:h-8 sm:w-9 transition-colors ${
                     viewMode === mode ? 'bg-[var(--ink)] text-[var(--lime)]' : 'hover:bg-[var(--cream)]'
                   }`}
                 >
@@ -253,7 +253,7 @@ export default function DashboardProjectGrid({ onStart }: { onStart?: () => void
               </div>
               <Link
                 href={`/project/${project.id}`}
-                className="hidden rounded-[8px] border-2 border-[var(--edge)] px-3 py-1.5 text-[12px] font-bold uppercase opacity-0 transition-opacity group-hover:opacity-100 md:block"
+                className="hidden rounded-[8px] border-2 border-[var(--edge)] px-3 py-1.5 text-[12px] font-bold uppercase transition-opacity md:block lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100"
               >
                 Open
               </Link>
@@ -282,10 +282,10 @@ function ProjectMenu({ name, onRename, onDelete }: { name: string; onRename: () 
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
     };
-    document.addEventListener('mousedown', onDown);
+    document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
     return () => {
-      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('pointerdown', onDown);
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);

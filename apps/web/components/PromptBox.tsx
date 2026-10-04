@@ -61,8 +61,8 @@ export default function PromptBox({
             size === 'lg' ? 'text-[16px]' : 'text-[15px]'
           }`}
         />
-        <div className="flex items-center justify-between gap-3 pl-3">
-          <span className="text-[12.5px] font-medium text-[var(--muted)]">{hint ?? 'Press Enter to start'}</span>
+        <div className="flex items-center justify-end gap-3 sm:justify-between sm:pl-3">
+          <span className="hidden text-[12.5px] font-medium text-[var(--muted)] sm:inline">{hint ?? 'Press Enter to start'}</span>
           <LimeButton onClick={onSubmit} disabled={busy}>
             {busy ? 'Starting' : 'Start building'}
           </LimeButton>
@@ -86,7 +86,7 @@ export default function PromptBox({
                 onChange(example);
                 inputRef?.current?.focus();
               }}
-              className={`rounded-[8px] border-2 border-[var(--edge)] bg-[var(--panel)] px-2.5 py-1 text-[12.5px] font-bold transition-colors hover:bg-[var(--lime)] active:translate-y-px ${
+              className={`min-h-[40px] rounded-[8px] border-2 border-[var(--edge)] bg-[var(--panel)] px-3 text-[13px] font-bold sm:min-h-[34px] transition-colors hover:bg-[var(--lime)] active:translate-y-px ${
                 index >= 3 ? 'hidden sm:inline-block' : ''
               }`}
             >

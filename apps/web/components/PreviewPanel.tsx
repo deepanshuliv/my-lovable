@@ -191,7 +191,7 @@ export default function PreviewPanel({
               aria-label={label}
               title={label}
               onClick={() => setViewport(id)}
-              className={`flex h-7 w-9 items-center justify-center rounded-[6px] transition-colors ${
+              className={`flex h-9 w-10 items-center justify-center rounded-[6px] sm:h-7 sm:w-9 transition-colors ${
                 viewport === id ? 'bg-[var(--ink)] text-[var(--lime)]' : 'hover:bg-[var(--cream)]'
               }`}
             >
@@ -209,7 +209,7 @@ export default function PreviewPanel({
             disabled={!url}
             aria-label="Reload preview"
             title="Reload preview"
-            className="btn-ghost btn-sm h-8 w-8 !p-0"
+            className="btn-ghost btn-sm h-9 w-9 !p-0 sm:h-8 sm:w-8"
           >
             <ArrowClockwise size={15} className={loading ? 'animate-spin' : ''} />
           </button>

@@ -12,7 +12,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="flex items-center gap-2">
             <ThemeToggle />
             <CreditsPill />
-            <span className="flex h-9 items-center">
+            <span className="flex h-10 items-center">
               <UserButton />
             </span>
           </div>
