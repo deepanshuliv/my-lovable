@@ -23,7 +23,7 @@ import {
 } from '@phosphor-icons/react';
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { isAuthError, type ByokProvider, type ProviderPreference } from '@/lib/byok';
+import { freeModelIssue, isAuthError, PROVIDERS, type ByokProvider, type FreeModelIssue, type ProviderPreference } from '@/lib/byok';
 import { showsOutput, summarize, toolKind, toolVerb, type ToolKind } from '@/lib/tools';
 import type { AgentMode, ChatItem } from '@/lib/types';
 import Composer from './Composer';
@@ -164,6 +164,7 @@ export default function ChatPanel({
               onAnswer={onAnswer}
               onOpenSecrets={onOpenSecrets}
               onOpenByok={onOpenByok}
+              usingFreeModel={!providerPref || providerPref.usePlatform}
             />
           ),
         )}
@@ -382,6 +383,72 @@ function CreditsCard({ onOpenByok }: { onOpenByok?: () => void }) {
   );
 }
 
+function freeResetTime(): string {
+  const now = new Date();
+  const reset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  return reset.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+const FREE_ISSUE_COPY: Record<FreeModelIssue, { title: string; body: () => string }> = {
+  daily: {
+    title: 'The free AI is done for today',
+    body: () => `The free AI can only do a set amount of work each day, and today's share is used up. Your project is saved. It comes back at ${freeResetTime()} your time.`,
+  },
+  busy: {
+    title: 'The free AI is busy right now',
+    body: () => 'Lots of people are building at the same time, so the free AI asked us to slow down. Your project is saved. Wait a minute, then send your message again.',
+  },
+  unavailable: {
+    title: 'The free AI is taking a break',
+    body: () => 'The free AI is not available at the moment. Your project is saved. Please try again a little later.',
+  },
+  other: {
+    title: 'The free AI could not finish this step',
+    body: () => 'Something went wrong on the free AI side, not in your app. Your project is saved. Send your message again to retry.',
+  },
+};
+
+function FreeModelCard({ message, onOpenByok }: { message: string; onOpenByok?: () => void }) {
+  const [details, setDetails] = useState(false);
+  const issue = freeModelIssue(message);
+  const copy = FREE_ISSUE_COPY[issue];
+
+  return (
+    <div className="overflow-hidden rounded-[12px] border-2 border-[var(--edge)] bg-[var(--panel)] shadow-[var(--hard)]">
+      <div className="bg-[var(--warn-card)] p-4">
+        <div className="flex items-center gap-2 text-[13.5px] font-bold">
+          <WarningCircle size={16} weight="fill" className="shrink-0 text-[var(--warning)]" />
+          {copy.title}
+        </div>
+        <p className="mt-2 text-[13px] leading-relaxed text-[var(--text)]/85">{copy.body()}</p>
+        {issue === 'other' && (
+          <button onClick={() => setDetails((value) => !value)} className="mt-2 text-[12px] font-bold text-[var(--muted)] underline underline-offset-2">
+            {details ? 'Hide details' : 'Show details'}
+          </button>
+        )}
+        {details && (
+          <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-[8px] bg-[var(--ink)] p-3 font-mono text-[11px] leading-relaxed text-[#d7f7a1]">
+            {message}
+          </pre>
+        )}
+      </div>
+      {onOpenByok && (
+        <div className="border-t-2 border-[var(--edge)] p-4">
+          <p className="text-[13px] font-bold">Don&rsquo;t want to wait?</p>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--muted)]">
+            Use your own AI key and keep building right away, with better designs too. It works with{' '}
+            {PROVIDERS.map((provider) => provider.label).join(', ').replace(/, ([^,]*)$/, ' or $1')}.
+          </p>
+          <button onClick={onOpenByok} className="btn-primary btn-sm mt-3">
+            <Key size={14} weight="bold" />
+            Use my own AI key
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function isCreditsMessage(text: string): boolean {
   return /free credits/i.test(text);
 }
@@ -414,11 +481,13 @@ function ChatRow({
   onAnswer,
   onOpenSecrets,
   onOpenByok,
+  usingFreeModel = false,
 }: {
   item: ChatItem;
   onAnswer: (id: string, a: string) => void;
   onOpenSecrets: () => void;
   onOpenByok?: () => void;
+  usingFreeModel?: boolean;
 }) {
   if (item.kind === 'user') {
     return (
@@ -461,6 +530,7 @@ function ChatRow({
 
   if (item.kind === 'error') {
     if (isCreditsMessage(item.message)) return <CreditsCard onOpenByok={onOpenByok} />;
+    if (usingFreeModel) return <FreeModelCard message={item.message} onOpenByok={onOpenByok} />;
     if (/usage limit/i.test(item.message)) {
       return (
         <div className="rounded-[12px] border-2 border-[var(--edge)] bg-[var(--warn-card)] p-4 shadow-[var(--hard)]">

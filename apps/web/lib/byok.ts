@@ -135,3 +135,40 @@ export function isAuthError(text: string): boolean {
     lower.includes('authentication')
   );
 }
+
+export function freeModelLabel(model?: string | null): string {
+  if (!model) return 'a free AI model';
+  const [vendor, name] = model.replace(/:free$/, '').split('/');
+  const words = (value: string) =>
+    value
+      .split(/[-_]/)
+      .filter(Boolean)
+      .map((word) => (/^\d/.test(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)))
+      .join(' ');
+  return name ? `${words(vendor!)} ${words(name)}` : words(vendor!);
+}
+
+export type FreeModelIssue = 'daily' | 'busy' | 'unavailable' | 'other';
+
+export function freeModelIssue(message: string): FreeModelIssue {
+  if (/daily|00:00 UTC/i.test(message)) return 'daily';
+  if (/usage limit|busy|rate.?limit|\b429\b|too many/i.test(message)) return 'busy';
+  if (/not available|no endpoints|unavailable/i.test(message)) return 'unavailable';
+  return 'other';
+}
+
+const FREE_NOTICE_KEY = 'inkling.free-model-notice.v1';
+
+export function hasSeenFreeModelNotice(): boolean {
+  try {
+    return localStorage.getItem(FREE_NOTICE_KEY) === '1';
+  } catch {
+    return true;
+  }
+}
+
+export function markFreeModelNoticeSeen() {
+  try {
+    localStorage.setItem(FREE_NOTICE_KEY, '1');
+  } catch {}
+}
