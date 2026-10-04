@@ -12,6 +12,7 @@ import ChatPanel from '@/components/ChatPanel';
 import PreviewPanel, { type ClientError } from '@/components/PreviewPanel';
 import SecretsPanel from '@/components/SecretsPanel';
 import GitHubPanel from '@/components/GitHubPanel';
+import FreeModelNotice from '@/components/FreeModelNotice';
 import {
   fetchHealth,
   fetchHistory,
@@ -34,6 +35,8 @@ import {
   setProviderPreference,
   type ByokProvider,
   type ProviderPreference,
+  hasSeenFreeModelNotice,
+  markFreeModelNoticeSeen,
 } from '@/lib/byok';
 import { START_PROGRESS, advance, fromStage, fromTool, type BuildProgress } from '@/lib/phase';
 import { useCredits } from '@/lib/useCredits';
@@ -497,8 +500,23 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
     },
   });
 
+  const [healthReady, setHealthReady] = useState(false);
+  const [freeNoticeOpen, setFreeNoticeOpen] = useState(false);
+
   useEffect(() => {
-    fetchHealth().then(setHealth);
+    fetchHealth().then((info) => {
+      setHealth(info);
+      setHealthReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (healthReady && providerPref.usePlatform && getProviderPreference().usePlatform && !hasSeenFreeModelNotice()) setFreeNoticeOpen(true);
+  }, [healthReady, providerPref.usePlatform]);
+
+  const closeFreeNotice = useCallback(() => {
+    markFreeModelNoticeSeen();
+    setFreeNoticeOpen(false);
   }, []);
 
   useEffect(() => {
@@ -798,6 +816,17 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
           onConnectDatabase={() => {
             setGithubOpen(false);
             setDraft('Connect a real database to my website so nothing gets lost.');
+          }}
+        />
+      )}
+
+      {freeNoticeOpen && !byokFor && (
+        <FreeModelNotice
+          model={health?.model.model}
+          onOk={closeFreeNotice}
+          onUseKey={() => {
+            closeFreeNotice();
+            setByokFor('openrouter');
           }}
         />
       )}
